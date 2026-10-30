@@ -1,0 +1,888 @@
+<script setup>
+import { reactive, computed, watch, nextTick, provide, onMounted, onBeforeUnmount } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+
+import TopBar from './components/TopBar.vue'
+import LeftRail from './components/LeftRail.vue'
+import PlayerStage from './components/PlayerStage.vue'
+import Filmstrip from './components/Filmstrip.vue'
+import MaterialPanel from './components/panels/MaterialPanel.vue'
+import FiltersPanel from './components/panels/FiltersPanel.vue'
+import GradingPanel from './components/panels/GradingPanel.vue'
+import ExportPanel from './components/panels/ExportPanel.vue'
+import TasksPanel from './components/panels/TasksPanel.vue'
+
+// ---------- 调色 / 蒙版的数据工厂 ----------
+// 同一套调色参数既用于全局一级调色，也用于每个蒙版的独立调色
+let maskSeq = 0
+
+const blankCurve = () => [{ x: 0, y: 0 }, { x: 1, y: 1 }]
+const blankHsl = () => ({
+  reds: { h: 0, s: 0, l: 0 }, oranges: { h: 0, s: 0, l: 0 },
+  yellows: { h: 0, s: 0, l: 0 }, greens: { h: 0, s: 0, l: 0 },
+  aquas: { h: 0, s: 0, l: 0 }, blues: { h: 0, s: 0, l: 0 },
+  purples: { h: 0, s: 0, l: 0 }, magentas: { h: 0, s: 0, l: 0 },
+})
+const blankSplit = () => ({ shadow_hue: 40, shadow_sat: 0, highlight_hue: 210, highlight_sat: 0, balance: 0 })
+const blankCalibration = () => ({ red_hue: 0, red_sat: 0, green_hue: 0, green_sat: 0, blue_hue: 0, blue_sat: 0 })
+
+function makeGrading() {
+  return {
+    // 一级调色
+    temperature: 0, tint: 0, exposure: 0,
+    highlights: 0, shadows: 0, whites: 0, blacks: 0,
+    contrast: 0, saturation: 0, vibrance: 0, sharpness: 0,
+    // 色轮：暗部 / 中间调 / 高光
+    lift: { x: 0, y: 0 }, gamma: { x: 0, y: 0 }, gain: { x: 0, y: 0 },
+    // 色调曲线（RGB + R/G/B）与曲线区域调整
+    curve: {
+      master: blankCurve(), r: blankCurve(), g: blankCurve(), b: blankCurve(),
+    },
+    curve_regions: { shadows: 0, midtones: 0, highlights: 0 },
+    hsl: blankHsl(),
+    split: blankSplit(),
+    calibration: blankCalibration(),
+  }
+}
+
+function makeMask(shape = 'radial') {
+  maskSeq += 1
+  return {
+    id: 'm' + maskSeq,
+    name: `蒙版 ${maskSeq}`,
+    enabled: true,
+    shape,
+    cx: 0.5, cy: 0.5, angle: 0,
+    size: 0.35, aspect: 0.6, feather: 0.25, invert: false,
+    brush_size: 0.12, strokes: [], pen_points: [],
+    grading: makeGrading(),
+  }
+}
+
+// 未选中任何蒙版时的占位对象，保证模板里的 app.mask 始终可读
+const idleMask = {
+  id: 'idle', name: '未选择蒙版', enabled: false, shape: 'radial',
+  cx: 0.5, cy: 0.5, angle: 0, size: 0.35, aspect: 0.6, feather: 0.25,
+  invert: false, brush_size: 0.12, strokes: [], pen_points: [],
+  grading: makeGrading(),
+}
+
+// 单一状态对象：原 data 的全部字段 + 子组件挂载后写入的 DOM 引用
+const app = reactive({
+  tab: 'media',
+  inputDir: '',
+  scanning: false,
+  files: [],
+  currentPath: '',
+  sel: [],
+  binNav: { left: false, right: false },
+  luts: [],
+  lutPath: '',
+  lut2Path: '',
+  useSecondLut: false,
+  lutStrength: 100,
+  lutStrength2: 100,
+  customLut: '',
+  outputMode: 'subfolder',
+  customDir: '',
+  resolution: 'original',
+  quality: 20,
+  bitDepth: 10,
+  useGpu: true,
+  batches: [],
+  timer: null,
+  gpuChecked: false,
+  gpuOk: false,
+  gpuMsg: '',
+  playUrl: '',
+  playTime: 0,
+  playDuration: 0,
+  playing: false,
+  previewingLut: false,
+  previewLoading: false,
+  previewText: '正在生成调色预览…',
+  thumbLoading: false,
+  mainThumbUrl: '',
+  compare: false,
+  thumbTimer: null,
+  thumbVersion: 0,
+  lastThumbAt: 0,
+  pickingDir: false,
+  // 可拖动的界面尺寸：右侧属性面板宽度、底部素材条高度
+  layout: { inspector: 348, bin: 176 },
+  // 预览画面缩放：滚轮以光标为中心缩放，放大后可拖动平移
+  zoom: { scale: 1, x: 0, y: 0 },
+  zoomDragging: false,
+  zoomStart: null,
+  // 调色（仿 Lightroom）：全局一级调色，含色轮 / 曲线 / HSL / 分离色调 / 校准
+  grading: makeGrading(),
+  // 蒙版：masks 为已确认的蒙版，maskDraft 为绘制中待确认的蒙版，maskId 为当前选中的蒙版
+  masks: [],
+  maskId: '',
+  maskDraft: null,
+  idleMask,
+  maskBox: null,
+  maskDragging: false,
+  penDragIndex: -1,
+  mediaAspect: 16 / 9,
+  // DOM 引用：playerEl（预览容器）、mediaEl（video/img）、binStrip（素材条）
+  playerEl: null,
+  mediaEl: null,
+  binStrip: null,
+})
+
+// ---------- computed ----------
+app.currentClip = computed(() => app.files.find(f => f.path === app.currentPath) || null)
+app.tabTitle = computed(() => ({ media: '素材', filter: '滤镜', color: '调色', export: '导出', tasks: '任务' }[app.tab]))
+const isLinearCurve = (pts) => (pts || []).every(p => Math.abs(p.x - p.y) < 0.005)
+// 任意一组调色参数是否偏离中性（全局与每个蒙版共用）
+const gradingUsed = (g) => {
+  if (!g) return false
+  const w = g.lift.x || g.lift.y || g.gamma.x || g.gamma.y || g.gain.x || g.gain.y
+  const curve = Object.values(g.curve).some(pts => pts.length > 2 || !isLinearCurve(pts))
+  const reg = g.curve_regions
+    ? (g.curve_regions.shadows || g.curve_regions.midtones || g.curve_regions.highlights) : 0
+  const hsl = Object.values(g.hsl).some(v => v.h || v.s || v.l)
+  const split = g.split.shadow_sat || g.split.highlight_sat
+  const cal = Object.values(g.calibration).some(v => v)
+  return !!(g.temperature || g.tint || g.exposure || g.contrast || g.saturation ||
+    g.highlights || g.shadows || g.whites || g.blacks || g.vibrance ||
+    g.sharpness || w || reg || curve || hsl || split || cal)
+}
+app.gradingUsed = gradingUsed
+app.hasGrading = computed(() => gradingUsed(app.grading))
+// 当前正在编辑的蒙版：草稿优先，其次是列表中被选中的蒙版
+app.maskEditing = computed(() =>
+  !!(app.maskDraft || app.masks.some(m => m.id === app.maskId)))
+app.mask = computed(() =>
+  app.maskDraft || app.masks.find(m => m.id === app.maskId) || idleMask)
+app.isDrawnMask = computed(() => app.mask.shape === 'brush' || app.mask.shape === 'pen')
+app.hasAdjust = computed(() =>
+  app.hasGrading || app.masks.some(m => m.enabled && gradingUsed(m.grading)))
+app.maskStyle = computed(() => {
+  const b = app.maskBox
+  if (!b) return { display: 'none' }
+  return {
+    left: b.left + 'px', top: b.top + 'px',
+    width: b.width + 'px', height: b.height + 'px',
+  }
+})
+// 预览画面缩放 / 平移（滚轮以光标为中心放大，拖动平移）
+app.zoomStyle = computed(() => ({
+  transform: `translate(${app.zoom.x}px, ${app.zoom.y}px) scale(${app.zoom.scale})`,
+  cursor: app.zoom.scale > 1.001 ? (app.zoomDragging ? 'grabbing' : 'grab') : 'default',
+}))
+// 蒙版引导图形：坐标统一为画面百分比（x 轴单位 = 宽，y 轴单位 = 高）
+app.maskGeo = computed(() => {
+  const m = app.mask
+  const ar = app.mediaAspect || 16 / 9
+  const cx = m.cx * 100, cy = m.cy * 100
+  if (app.isDrawnMask) return { type: 'drawn', cx, cy }
+  if (m.shape === 'radial') {
+    const size = Math.max(0.02, m.size)
+    return {
+      type: 'radial', cx, cy,
+      rx: size * 100, ry: size * 100 * ar,
+      fade: Math.max(0.02, Math.min(0.97, (size - m.feather) / size)),
+    }
+  }
+  if (m.shape === 'rect') {
+    const hw = Math.max(0.02, m.size) * 100
+    const hh = Math.max(0.02, m.size) * m.aspect * ar * 100
+    return { type: 'rect', cx, cy, x: cx - hw, y: cy - hh, w: hw * 2, h: hh * 2 }
+  }
+  const a = (m.angle || 0) * Math.PI / 180
+  const dx = Math.cos(a), dy = Math.sin(a)
+  const px = -Math.sin(a), py = Math.cos(a)
+  const L = 140, off = Math.max(0.02, m.size) / 2
+  return {
+    type: 'linear', cx, cy,
+    x1: cx - px * L, y1: cy - py * L, x2: cx + px * L, y2: cy + py * L,
+    x1b: cx - px * L + dx * off, y1b: cy - py * L + dy * off,
+    x2b: cx + px * L + dx * off, y2b: cy + py * L + dy * off,
+  }
+})
+// LUT 分两类：内置的灰片还原 LUT（一级）与 luts/ 里的个性化 LUT（二级叠加）
+app.restoreLuts = computed(() => app.luts.filter(l => l.kind === 'restore'))
+app.creativeLuts = computed(() => app.luts.filter(l => l.kind === 'creative'))
+app.lutLabel = computed(() => {
+  const l = app.luts.find(x => x.path === app.lutPath)
+  if (!l) return '未选择滤镜'
+  let label = `滤镜：${l.name} · ${app.lutStrength}%`
+  const l2 = app.luts.find(x => x.path === app.lut2Path)
+  if (app.useSecondLut && l2) label += ` + ${l2.name} · ${app.lutStrength2}%`
+  return label
+})
+app.resolutionText = computed(() => ({ original: '原始分辨率', '1080p': '1080p', '720p': '720p' }[app.resolution]))
+app.canStart = computed(() => app.sel.length > 0 && (app.customLut || app.lutPath) &&
+  (!app.useSecondLut || app.lut2Path) &&
+  (app.outputMode !== 'custom' || app.customDir))
+app.batchesReversed = computed(() => [...app.batches].reverse())
+app.hasRunning = computed(() => app.batches.some(b => b.status === 'running'))
+app.showThumb = computed(() => !app.playUrl && !!app.mainThumbUrl)
+
+// ---------- 工具方法 ----------
+app.fmtSize = (b) => (b / 1024 / 1024).toFixed(1) + ' MB'
+app.fmtNum = (v, d) => (Number(v) || 0).toFixed(d)
+app.fmtDur = (s) => {
+  if (!s) return '-'
+  const m = Math.floor(s / 60), ss = Math.round(s % 60)
+  return `${m}:${String(ss).padStart(2, '0')}`
+}
+
+// ---------- 底部素材条 ----------
+app.scrollBin = (dir) => {
+  const el = app.binStrip
+  if (!el) return
+  const step = Math.max(240, el.clientWidth - 180)
+  el.scrollBy({ left: dir * step, behavior: 'smooth' })
+}
+
+app.onBinWheel = (e) => {
+  const el = app.binStrip
+  if (!el) return
+  if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return
+  if (el.scrollWidth <= el.clientWidth) return
+  e.preventDefault()
+  el.scrollLeft += e.deltaY
+  app.updateBinNav()
+}
+
+app.updateBinNav = () => {
+  const el = app.binStrip
+  if (!el) { app.binNav.left = app.binNav.right = false; return }
+  app.binNav.left = el.scrollLeft > 4
+  app.binNav.right = el.scrollLeft + el.clientWidth < el.scrollWidth - 4
+}
+
+// ---------- 界面尺寸拖动 ----------
+// 拖动右侧面板左边界（左右）或素材条上边界（上下），实时改变预览区大小
+app.startResize = (which, ev) => {
+  ev.preventDefault()
+  const startX = ev.clientX
+  const startY = ev.clientY
+  const base = which === 'inspector' ? app.layout.inspector : app.layout.bin
+  const move = (e) => {
+    if (which === 'inspector') {
+      const max = Math.max(320, window.innerWidth - 430)
+      app.layout.inspector = Math.min(max, Math.max(260, base + (startX - e.clientX)))
+    } else {
+      const max = Math.max(200, window.innerHeight - 230)
+      app.layout.bin = Math.min(max, Math.max(150, base + (startY - e.clientY)))
+    }
+    app.updateMaskBox()
+    app.updateBinNav()
+  }
+  const up = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    document.body.style.cursor = ''
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+  document.body.style.cursor = which === 'inspector' ? 'col-resize' : 'row-resize'
+}
+
+// ---------- 预览缩放 ----------
+app.resetZoom = () => {
+  app.zoom = { scale: 1, x: 0, y: 0 }
+  nextTick(app.updateMaskBox)
+}
+
+app.onZoomWheel = (ev) => {
+  const host = app.playerEl
+  if (!host || !app.mediaEl) return
+  if (ev.target.closest && ev.target.closest('.tl-bar')) return
+  ev.preventDefault()
+  const r = host.getBoundingClientRect()
+  const dx = ev.clientX - (r.left + r.width / 2)
+  const dy = ev.clientY - (r.top + r.height / 2)
+  const s0 = app.zoom.scale
+  const s1 = Math.min(8, Math.max(1, s0 * Math.exp(-ev.deltaY * 0.0022)))
+  // 保持光标下的像素不动：t' = d - (s'/s) * (d - t)
+  const k = s1 / s0
+  let x = dx - k * (dx - app.zoom.x)
+  let y = dy - k * (dy - app.zoom.y)
+  if (s1 <= 1.001) {
+    x = 0
+    y = 0
+  } else {
+    const limX = (r.width * (s1 - 1)) / 2
+    const limY = (r.height * (s1 - 1)) / 2
+    x = Math.max(-limX, Math.min(limX, x))
+    y = Math.max(-limY, Math.min(limY, y))
+  }
+  app.zoom = { scale: s1, x, y }
+  nextTick(app.updateMaskBox)
+}
+
+app.zoomPanStart = (ev) => {
+  if (ev.button !== 0 || app.zoom.scale <= 1.001 || app.maskEditing) return
+  app.zoomDragging = true
+  app.zoomStart = { x: ev.clientX, y: ev.clientY, tx: app.zoom.x, ty: app.zoom.y }
+  try { ev.currentTarget.setPointerCapture(ev.pointerId) } catch (e) { /* 合成事件可能没有真实 pointerId */ }
+}
+
+app.zoomPanMove = (ev) => {
+  if (!app.zoomDragging || !app.zoomStart) return
+  app.zoom = {
+    ...app.zoom,
+    x: app.zoomStart.tx + (ev.clientX - app.zoomStart.x),
+    y: app.zoomStart.ty + (ev.clientY - app.zoomStart.y),
+  }
+  app.updateMaskBox()
+}
+
+app.zoomPanEnd = (ev) => {
+  app.zoomDragging = false
+  try { ev.currentTarget.releasePointerCapture(ev.pointerId) } catch (e) { /* 同上 */ }
+}
+
+// ---------- 调色 / 蒙版 ----------
+app.resetGrading = () => { Object.assign(app.grading, makeGrading()) }
+
+// 参与渲染 / 导出的蒙版：已启用的列表项 + 正在绘制的草稿
+app.allMasks = () => {
+  const list = app.masks.filter(m => m.enabled)
+  if (app.maskDraft && app.maskDraft.enabled) list.push(app.maskDraft)
+  return list
+}
+
+// 传给后端（URL 查询串）时压缩点数，避免缩略图 URL 过长
+app.masksParam = () => {
+  const q = (v) => Math.round(v * 10000) / 10000
+  const point = (p) => ({ x: q(p.x), y: q(p.y) })
+  return JSON.stringify(app.allMasks().map(m => ({
+    name: m.name, enabled: m.enabled, shape: m.shape,
+    cx: q(m.cx), cy: q(m.cy), angle: q(m.angle), size: q(m.size),
+    aspect: q(m.aspect), feather: q(m.feather), invert: m.invert,
+    brush_size: q(m.brush_size),
+    strokes: m.strokes.map(s => s.map(point)),
+    pen_points: m.pen_points.map(point),
+    grading: m.grading,
+  })))
+}
+
+// 新建蒙版（草稿）：若已有未确认的草稿，则直接切换形状
+app.newMask = (shape) => {
+  if (app.maskDraft) { app.resetMaskGeo(shape); return }
+  app.maskId = ''
+  app.maskDraft = makeMask(shape)
+}
+
+// 选中已确认的蒙版继续编辑；再次点击取消选中
+app.selectMask = (m) => {
+  if (!m) return
+  app.maskDraft = null
+  app.maskId = app.maskId === m.id ? '' : m.id
+}
+
+app.confirmMask = () => {
+  const d = app.maskDraft
+  if (!d) return
+  app.masks.push(d)
+  app.maskDraft = null
+  app.maskId = d.id
+}
+
+app.deleteMask = (m) => {
+  if (!m) return
+  if (app.maskDraft && m.id === app.maskDraft.id) { app.maskDraft = null; return }
+  const i = app.masks.findIndex(x => x.id === m.id)
+  if (i >= 0) app.masks.splice(i, 1)
+  if (app.maskId === m.id) app.maskId = ''
+}
+
+// 只重置形状参数，保留该蒙版已有的独立调色
+app.resetMaskGeo = (shape) => {
+  const m = app.mask
+  Object.assign(m, {
+    shape: shape || m.shape, cx: 0.5, cy: 0.5, angle: 0,
+    size: 0.35, aspect: 0.6, feather: 0.25, invert: false,
+  })
+  m.strokes = []
+  m.pen_points = []
+}
+
+app.resetMask = () => app.resetMaskGeo()
+
+// 钢笔：点中已有顶点则拖动该点，否则新增顶点（新增后按住即可继续拖动调整）
+const PEN_HIT = 0.02
+const penHitIndex = (x, y) => {
+  let best = -1
+  let bestD = PEN_HIT
+  app.mask.pen_points.forEach((p, i) => {
+    const d = Math.hypot(p.x - x, p.y - y)
+    if (d < bestD) { bestD = d; best = i }
+  })
+  return best
+}
+
+app.maskPaintStart = (x, y) => {
+  if (app.mask.shape === 'brush') {
+    app.mask.strokes.push([{ x, y }])
+    app.maskDragging = true
+  } else if (app.mask.shape === 'pen') {
+    const hit = penHitIndex(x, y)
+    if (hit >= 0) {
+      app.penDragIndex = hit
+    } else {
+      app.mask.pen_points.push({ x, y })
+      app.penDragIndex = app.mask.pen_points.length - 1
+    }
+  }
+}
+
+app.maskPaintMove = (x, y) => {
+  if (app.mask.shape === 'pen' && app.penDragIndex >= 0) {
+    const p = app.mask.pen_points[app.penDragIndex]
+    if (p) { p.x = x; p.y = y }
+    return
+  }
+  if (!app.maskDragging || app.mask.shape !== 'brush') return
+  const stroke = app.mask.strokes[app.mask.strokes.length - 1]
+  if (!stroke) return
+  const last = stroke[stroke.length - 1]
+  if (last && Math.hypot(last.x - x, last.y - y) < 0.003) return
+  stroke.push({ x, y })
+}
+
+app.maskPaintEnd = () => {
+  app.maskDragging = false
+  app.penDragIndex = -1
+}
+
+app.clearMaskPath = () => {
+  app.mask.strokes = []
+  app.mask.pen_points = []
+}
+
+app.penUndo = () => { app.mask.pen_points.pop() }
+
+// 蒙版引导层与画面实际显示区域对齐
+app.updateMaskBox = () => {
+  const host = app.playerEl, el = app.mediaEl
+  if (!host || !el || !el.getBoundingClientRect) { app.maskBox = null; return }
+  const r = el.getBoundingClientRect(), h = host.getBoundingClientRect()
+  if (!r.width || !r.height) { app.maskBox = null; return }
+  app.maskBox = {
+    left: r.left - h.left, top: r.top - h.top,
+    width: r.width, height: r.height,
+  }
+}
+
+app.maskPoint = (ev) => {
+  const svg = app.playerEl && app.playerEl.querySelector('.mask-svg')
+  if (!svg) return
+  const r = svg.getBoundingClientRect()
+  if (!r.width || !r.height) return
+  app.mask.cx = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width))
+  app.mask.cy = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height))
+}
+
+app.maskDown = (ev) => {
+  app.maskDragging = true
+  app.maskPoint(ev)
+  if (ev.currentTarget.setPointerCapture) ev.currentTarget.setPointerCapture(ev.pointerId)
+}
+
+app.maskMove = (ev) => { if (app.maskDragging) app.maskPoint(ev) }
+app.maskUp = () => { app.maskDragging = false }
+
+// ---------- 预览 ----------
+app.onThumbLoad = (ev) => {
+  app.thumbLoading = false
+  const el = ev.target
+  if (el.naturalWidth && el.naturalHeight) app.mediaAspect = el.naturalWidth / el.naturalHeight
+  nextTick(app.updateMaskBox)
+}
+
+app.onMediaMeta = (ev) => {
+  const el = ev.target
+  if (el.videoWidth && el.videoHeight) app.mediaAspect = el.videoWidth / el.videoHeight
+  if (el.duration) app.playDuration = el.duration
+  app.playTime = 0
+  app.playing = !el.paused
+  nextTick(app.updateMaskBox)
+}
+
+app.thumbUrl = (opts) => {
+  const o = Object.assign({ path: app.currentPath, w: 480 }, opts || {})
+  if (!o.path) return ''
+  const q = new URLSearchParams({ path: o.path, w: o.w })
+  if (o.lut) {
+    q.set('lut', o.lut)
+    q.set('strength', o.strength !== undefined ? o.strength : 100)
+    if (o.lut2) {
+      // 卡片预览时直接指定叠加的个性化 LUT，不依赖当前是否已启用二级调色
+      q.set('lut2', o.lut2)
+      q.set('strength2', o.strength2 !== undefined ? o.strength2 : 100)
+    } else if (!o.noSecond && app.useSecondLut && app.lut2Path) {
+      q.set('lut2', app.lut2Path)
+      q.set('strength2', app.lutStrength2)
+    }
+  }
+  // 主预览需要体现当前调色与蒙版；滤镜卡片保持纯 LUT 效果，避免批量重渲染
+  if (o.full) {
+    if (app.hasGrading) q.set('grading', JSON.stringify(app.grading))
+    if (app.allMasks().length) q.set('masks', app.masksParam())
+  }
+  return '/api/thumb?' + q.toString()
+}
+
+app.activeLutPath = () => app.customLut || app.lutPath
+
+app.setCurrentThumb = () => {
+  const lut = app.activeLutPath()
+  app.mainThumbUrl = lut
+    ? app.thumbUrl({ lut, strength: app.lutStrength, w: 560, full: true })
+    : app.thumbUrl({ w: 560, full: true })
+  app.previewingLut = !!lut
+}
+
+app.setOriginalThumb = () => {
+  if (!app.currentPath) return
+  app.mainThumbUrl = app.thumbUrl({ w: 560 })
+  app.previewingLut = false
+}
+
+app.refreshPreview = (immediate) => {
+  app.stopPlay()
+  if (!app.currentPath) return
+  clearTimeout(app.thumbTimer)
+  app.thumbLoading = true
+  // 拖动滑杆时按最短间隔节流刷新，松手（immediate）立即出图
+  const wait = immediate ? 0 : Math.max(0, 250 - (Date.now() - (app.lastThumbAt || 0)))
+  app.thumbTimer = setTimeout(() => {
+    app.lastThumbAt = Date.now()
+    if (app.compare) app.setOriginalThumb()
+    else app.setCurrentThumb()
+    if (!app.currentPath) app.thumbLoading = false
+  }, wait)
+}
+
+// 调用系统文件夹选择框（服务端弹窗），结果写回输入框
+app.pickDir = async (target, title) => {
+  const initial = target === 'input' ? app.inputDir : app.customDir
+  app.pickingDir = true
+  try {
+    const r = await fetch('/api/pick_dir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, initial }),
+    })
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) return ElMessage.error(d.error || '打开选择框失败')
+    const p = (d.path || '').trim()
+    if (!p) return
+    if (target === 'input') app.inputDir = p
+    else app.customDir = p
+  } catch (e) {
+    ElMessage.error('打开选择框失败：' + e.message)
+  } finally {
+    app.pickingDir = false
+  }
+}
+
+app.onThumbError = () => { app.thumbLoading = false }
+
+app.onPlayError = () => {
+  app.previewLoading = false
+  app.playUrl = ''
+  ElMessage.error('浏览器无法播放该预览')
+}
+
+// ---------- 扫描 / LUT / GPU ----------
+app.scanDir = async () => {
+  const dir = (app.inputDir || '').trim().replace(/^"|"$/g, '')
+  if (!dir) return ElMessage.warning('请先填写视频文件夹路径')
+  app.scanning = true
+  try {
+    const r = await fetch('/api/list_videos?dir=' + encodeURIComponent(dir))
+    const d = await r.json()
+    if (d.error) { ElMessage.error(d.error); app.files = [] }
+    else {
+      app.files = d.files
+      app.sel = d.files.map(f => f.path)
+      if (d.files.length) { app.currentPath = d.files[0].path; app.refreshPreview() }
+      ElMessage.success(`扫描完成，共 ${d.files.length} 个视频`)
+    }
+    localStorage.setItem('osmo.lastDir', dir)
+  } finally {
+    app.scanning = false
+    nextTick(app.updateBinNav)
+  }
+}
+
+app.toggleClip = (f) => {
+  app.currentPath = f.path
+  const i = app.sel.indexOf(f.path)
+  if (i >= 0) app.sel.splice(i, 1); else app.sel.push(f.path)
+  app.refreshPreview()
+}
+
+app.selectAll = () => { app.sel = app.files.map(f => f.path) }
+
+app.loadLuts = async () => {
+  const r = await fetch('/api/luts')
+  const d = await r.json()
+  app.luts = d.luts
+  if (!app.lutPath && app.luts.length) app.lutPath = app.luts[0].path
+}
+
+app.loadGpuStatus = async () => {
+  try {
+    const r = await fetch('/api/gpu_status')
+    const d = await r.json()
+    app.gpuOk = d.available
+    app.gpuMsg = d.message || ''
+    app.gpuChecked = true
+    if (!app.gpuOk) app.useGpu = false
+  } catch (e) { app.gpuChecked = true; app.useGpu = false }
+  if (!app.gpuOk) ElMessage.warning('GPU 编码不可用，已切换到 CPU 模式')
+}
+
+// 点击个性化 LUT 卡片：作为二级叠加应用
+app.applyLookLut = (path) => {
+  app.lut2Path = path
+  app.useSecondLut = true
+  app.refreshPreview()
+}
+app.onLutUploaded = (resp) => {
+  ElMessage.success('LUT 上传成功：' + resp.name)
+  app.loadLuts().then(() => app.applyLookLut(resp.path))
+}
+
+app.onLutUploadError = () => { ElMessage.error('LUT 上传失败，仅支持 .cube 文件') }
+
+// ---------- 播放 ----------
+app.playGraded = async () => {
+  if (!app.currentPath) return
+  app.previewLoading = true
+  app.previewText = '正在生成调色预览（首次需几秒）…'
+  try {
+    const r = await fetch('/api/preview_graded', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: app.currentPath,
+        lut_path: app.activeLutPath(),
+        lut_strength: app.lutStrength,
+        lut_path2: app.useSecondLut ? app.lut2Path : '',
+        lut_strength2: app.lutStrength2,
+        grading: app.grading,
+        masks: app.allMasks(),
+      }),
+    })
+    const d = await r.json()
+    if (d.error) { ElMessage.error(d.error); return }
+    app.playTime = 0
+    app.playDuration = 0
+    app.playUrl = d.url
+    app.previewingLut = true
+  } catch (e) {
+    ElMessage.error('预览请求失败：' + e)
+  } finally {
+    app.previewLoading = false
+  }
+}
+
+app.playOriginal = async () => {
+  if (!app.currentPath) return
+  app.previewLoading = true
+  app.previewText = '正在准备原片预览（HEVC 首次需转码）…'
+  try {
+    const r = await fetch('/api/preview/ensure', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: app.currentPath }),
+    })
+    const d = await r.json()
+    if (d.error) { ElMessage.error(d.error); return }
+    app.playTime = 0
+    app.playDuration = 0
+    app.playUrl = d.url
+    app.previewingLut = false
+  } catch (e) {
+    ElMessage.error('预览请求失败：' + e)
+  } finally {
+    app.previewLoading = false
+  }
+}
+
+app.stopPlay = () => {
+  app.playUrl = ''
+  app.playTime = 0
+  app.playDuration = 0
+  app.playing = false
+}
+
+app.onPlayEnded = () => {
+  app.playing = false
+  app.playTime = app.playDuration
+}
+
+app.onTimeUpdate = () => {
+  const el = app.mediaEl
+  if (!el || !el.duration) return
+  app.playDuration = el.duration
+  app.playTime = el.currentTime
+}
+
+app.seekTo = (v) => {
+  const el = app.mediaEl
+  if (!el || !el.duration) return
+  el.currentTime = Math.min(el.duration, Math.max(0, Number(v) || 0))
+  app.playTime = el.currentTime
+}
+
+app.togglePlay = () => {
+  const el = app.mediaEl
+  if (!el) return
+  if (el.paused) el.play(); else el.pause()
+}
+
+app.skip = (sec) => {
+  const el = app.mediaEl
+  if (!el || !el.duration) return
+  el.currentTime = Math.min(el.duration, Math.max(0, el.currentTime + sec))
+  app.playTime = el.currentTime
+}
+
+// ---------- 导出 / 任务 ----------
+app.start = async () => {
+  const r = await fetch('/api/convert', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      files: app.sel,
+      lut_path: app.activeLutPath(),
+      lut_path2: app.useSecondLut ? app.lut2Path : '',
+      lut_strength: app.lutStrength,
+      lut_strength2: app.lutStrength2,
+      output_mode: app.outputMode,
+      custom_dir: app.customDir,
+      resolution: app.resolution,
+      use_gpu: app.useGpu,
+      quality: app.quality,
+      bit_depth: app.bitDepth,
+      grading: app.grading,
+      masks: app.allMasks(),
+    }),
+  })
+  const d = await r.json()
+  if (d.error) { ElMessage.error(d.error); return }
+  ElMessage.success('导出任务已开始')
+  app.tab = 'tasks'
+  app.poll()
+}
+
+app.poll = async () => {
+  try {
+    const r = await fetch('/api/batches')
+    const d = await r.json()
+    app.batches = d.batches
+    const running = app.batches.some(b => b.status === 'running')
+    clearTimeout(app.timer)
+    if (running) app.timer = setTimeout(app.poll, 1000)
+  } catch (e) { /* 忽略 */ }
+}
+
+app.stopAll = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '将终止正在转换的文件并清空等待队列，未完成的半成品会被删除（已完成的保留）。',
+      '暂停全部导出',
+      { confirmButtonText: '暂停全部', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch (e) { return }
+  await fetch('/api/stop_all', { method: 'POST' })
+  ElMessage.info('已暂停全部导出')
+  app.poll()
+}
+
+app.tagType = (s) => ({ pending: 'info', converting: 'warning', done: 'success', error: 'danger', skipped: 'info', cancelled: 'info' }[s] || 'info')
+app.statusText = (s) => ({ pending: '等待', converting: '转换中', done: '完成', error: '失败', skipped: '已存在', cancelled: '已取消' }[s] || s)
+app.progStatus = (s) => s === 'done' ? 'success' : (s === 'error' ? 'exception' : undefined)
+
+// ---------- watchers ----------
+watch(() => app.files, () => nextTick(app.updateBinNav))
+watch(() => app.lutPath, (v, old) => {
+  // LUT 列表首次加载会赋值 lutPath，此时只刷新缩略图，避免打断正在播放的预览
+  if (!old && app.playUrl) { app.setCurrentThumb(); return }
+  app.refreshPreview()
+})
+watch(() => app.lutStrength, () => app.refreshPreview())
+watch(() => app.lut2Path, () => app.refreshPreview())
+watch(() => app.lutStrength2, () => app.refreshPreview())
+watch(() => app.useSecondLut, () => app.refreshPreview())
+watch(() => app.customLut, () => app.refreshPreview())
+watch(() => app.grading, () => app.refreshPreview(), { deep: true })
+watch(() => app.masks, () => {
+  nextTick(app.updateMaskBox)
+  app.refreshPreview()
+}, { deep: true })
+watch(() => app.maskDraft, () => {
+  nextTick(app.updateMaskBox)
+  app.refreshPreview()
+}, { deep: true })
+watch(() => app.mainThumbUrl, () => nextTick(app.updateMaskBox))
+watch(() => app.playUrl, () => nextTick(app.updateMaskBox))
+watch(() => app.tab, () => nextTick(app.updateMaskBox))
+watch(() => app.currentPath, () => app.resetZoom())
+watch(() => app.compare, (v) => {
+  if (v) app.setOriginalThumb()
+  else app.setCurrentThumb()
+})
+
+provide('app', app)
+
+onMounted(() => {
+  const last = localStorage.getItem('osmo.lastDir')
+  if (last) app.inputDir = last
+  app.loadLuts()
+  app.loadGpuStatus()
+  app.poll()
+  if (last) app.scanDir()
+  window.addEventListener('resize', app.updateMaskBox)
+  window.addEventListener('resize', app.updateBinNav)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', app.updateMaskBox)
+  window.removeEventListener('resize', app.updateBinNav)
+})
+</script>
+
+<template>
+  <!-- 顶栏 -->
+  <TopBar />
+
+  <div class="main">
+    <!-- 左侧栏 -->
+    <LeftRail />
+
+    <!-- 预览区 -->
+    <PlayerStage />
+
+    <!-- 左右拖动：调整右侧属性面板宽度 -->
+    <div class="resizer v" title="拖动调整面板宽度" @pointerdown="app.startResize('inspector', $event)"></div>
+
+    <!-- 右侧属性面板 -->
+    <aside class="inspector" :style="{ width: app.layout.inspector + 'px' }">
+      <div class="panel-head">{{ app.tabTitle }}</div>
+
+      <MaterialPanel v-show="app.tab === 'media'" />
+      <FiltersPanel v-show="app.tab === 'filter'" />
+      <GradingPanel v-show="app.tab === 'color'" />
+      <ExportPanel v-show="app.tab === 'export'" />
+      <TasksPanel v-show="app.tab === 'tasks'" />
+    </aside>
+  </div>
+
+  <!-- 上下拖动：调整素材条高度（缩略图等比放大） -->
+  <div class="resizer h" title="拖动调整素材条高度" @pointerdown="app.startResize('bin', $event)"></div>
+
+  <!-- 底部素材条 -->
+  <Filmstrip />
+</template>
