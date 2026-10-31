@@ -103,10 +103,11 @@ npm run build       # 打包到 ../web，之后刷新 http://127.0.0.1:5000
 
 ### LUT 管理
 
-- 灰片还原 LUT：把 `.cube` 拷进 `luts/restore/`（仓库已带 `DJI_DLogM_to_Rec709.cube`、`AppleLogToRec709-v1.0.cube`）。刷新页面即出现在「灰片还原 LUT（一级）」区，无需改代码或重启
-- 个性化 LUT：把 `.cube` 拷进 `luts/creative/`，或在「滤镜」面板上传（上传文件也保存到该目录）。刷新后出现在「二级调色 · 个性化 LUT」区
+- 灰片还原 LUT：把 `.cube` 拷进 `luts/restore/`。仓库已带 `DJI_DLogM_to_Rec709.cube`、`AppleLogToRec709-v1.0.cube`、`Apple Log To Rec709 Fix.cube`、`（iPhone 17 Pro）还原Lut_applelog2.cube`。刷新页面即出现在「灰片还原 LUT（一级）」区，无需改代码或重启
+- 个性化 LUT：把 `.cube` 拷进 `luts/creative/`，或在「滤镜」面板上传（上传文件也保存到该目录）。仓库已带 DJI Pocket 3 四季 Pro、Analogica Lab Kodak 2383（D55 / D60 / D65，LOG 与 Rec709 两版）、Pixflow CL Kodak（Portra / Ektachrome / VISION3 等，LOG 与 Rec709 两版）、赐福司影调 01–02、青青风格化 1–3
 - 页面按文件名展示；`DJI OSMO Pocket 3 xxx.cube` 会显示为 `xxx（Pocket 3 调色）`
 - 个性化卡片缩略图显示「当前还原 LUT + 该风格 LUT」的组合效果
+- 文件名带 `LOG` 的 LUT 以 Log 素材为输入；带 `Rec709` 的以 Rec.709 素材为输入。已套用还原 LUT 后再叠加风格 LUT 时请选 Rec709 版本，避免重复还原
 
 ### 项目结构
 
@@ -323,10 +324,11 @@ npm run build       # bundles into ../web
 
 ### Managing LUTs
 
-- Restoration LUTs: copy `.cube` files into `luts/restore/` (already contains `DJI_DLogM_to_Rec709.cube` and `AppleLogToRec709-v1.0.cube`). Refresh the page and they appear, no restart needed
-- Creative LUTs: copy files into `luts/creative/`, or upload them from the Filter panel
+- Restoration LUTs: copy `.cube` files into `luts/restore/`. The repo bundles `DJI_DLogM_to_Rec709.cube`, `AppleLogToRec709-v1.0.cube`, `Apple Log To Rec709 Fix.cube` and `（iPhone 17 Pro）还原Lut_applelog2.cube`. Refresh the page and they appear, no restart needed
+- Creative LUTs: copy files into `luts/creative/`, or upload them from the Filter panel. Bundled sets include DJI Pocket 3 seasonal Pro LUTs, Analogica Lab Kodak 2383 (D55 / D60 / D65, LOG and Rec709 versions), Pixflow CL Kodak (Portra / Ektachrome / VISION3 etc., LOG and Rec709 versions), 赐福司影调 01–02 and 青青风格化 1–3
 - Cards are labelled from filenames; `DJI OSMO Pocket 3 xxx.cube` shows as `xxx (Pocket 3 look)`
 - Creative thumbnails preview "current restoration LUT + that look LUT"
+- LUTs named `LOG` expect Log input; those named `Rec709` expect Rec.709 input. After applying a restoration LUT, pick the `Rec709` version to avoid double restoration
 
 ### Project structure
 
