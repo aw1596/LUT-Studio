@@ -15,7 +15,7 @@
 
 ## 中文
 
-LUT Studio 把 Log 视频还原为 Rec.709，并对普通视频做 **3D LUT 批量调色 + 一级调色 + 蒙版局部调色**。它提供一个桌面端风格的网页界面（深色主题、预览台、素材胶片条、导出队列）和一套命令行入口，内置 48 个 LUT（Log 还原、Log 直转风格化、Rec.709 风格 LUT）。
+LUT Studio 把 Log 视频还原为 Rec.709，并对普通视频做 **3D LUT 批量调色 + 一级调色 + 蒙版局部调色**。它提供一个桌面端风格的网页界面（深色主题、预览台、素材胶片条、导出队列）和一套命令行入口，内置 53 个 LUT（Log 还原、Log 直转风格化、Rec.709 风格 LUT）。
 
 技术栈：Python + Flask + FFmpeg；前端为 Vue 3 + Vite 工程，构建产物由 Flask 直接托管。
 
@@ -107,14 +107,19 @@ npm run build       # 打包到 ../web，之后刷新 http://127.0.0.1:5000
 
 页面按目录自动分组，刷新即可显示新增文件，无需改代码或重启。
 
-**灰片还原 LUT（一级）** — `luts/restore/`，仓库内置 4 个：
+**灰片还原 LUT（一级）** — `luts/restore/`，仓库内置 9 个：
 
 | 文件 | 页面显示 |
 | --- | --- |
-| `DJI_DLogM_to_Rec709.cube` | DJI D-Log-M → Rec.709 |
-| `AppleLogToRec709-v1.0.cube` | Apple Log → Rec.709 |
-| `Apple Log To Rec709 Fix.cube` | Apple Log → Rec.709 (Fix) |
-| `Apple Log2 To Rec709.cube` | Apple Log 2 → Rec.709 |
+| `DJI DLogM To Rec.709.cube` | DJI D-Log-M → Rec.709 |
+| `DJI OSMO Pocket 4 D-Log to Rec.709.cube` | DJI Pocket 4 D-Log → Rec.709 |
+| `DJI OSMO Pocket 4P D-Log2 to Rec.709.cube` | DJI Pocket 4P D-Log2 → Rec.709 |
+| `Apple Log To Rec.709.cube` | Apple Log → Rec.709 |
+| `Apple Log To Rec.709 Fix.cube` | Apple Log → Rec.709 (Fix) |
+| `Apple Log2 To Rec.709.cube` | Apple Log 2 → Rec.709 |
+| `ViVO Log To Rec.709.cube` | ViVO Log → Rec.709 |
+| `O Log To Rec.709.cube` | O-Log → Rec.709 |
+| `O Log2 To Rec709.cube` | O-Log 2 → Rec.709 |
 
 **Log 转 风格化 LUT（一级）** — `luts/log_style/`，以 Log 素材为输入，一次完成还原 + 风格化（输出 Rec.709），选中后无需再叠加还原 LUT。仓库内置 23 个：
 
@@ -130,7 +135,7 @@ npm run build       # 打包到 ../web，之后刷新 http://127.0.0.1:5000
 
 补充说明：
 
-- 页面按文件名展示；`luts/restore/` 里上述 4 个文件名有中文映射，其余显示原始文件名
+- 页面按文件名展示；`luts/restore/` 里上述 9 个还原 LUT 都有中文显示名，其余显示原始文件名
 - 个性化卡片缩略图显示「当前还原 LUT + 该风格 LUT」的组合效果
 - 带 `Log -` 前缀的 LUT 以 Log 素材为输入（统一放在 `luts/log_style/`）；`creative/` 里的同名 LUT 以 Rec.709 素材为输入。套用 Log 风格化 LUT 后无需再加还原 LUT；已还原的画面叠加风格 LUT 时请选 `creative/` 版本
 
@@ -258,14 +263,14 @@ python main.py
 
 MIT License
 
-- DJI Osmo Pocket 3 官方 LUT：[DJI](https://www.dji.com)
+- 官方 LUT：DJI（Pocket 3 / 4 / 4P）、Apple、ViVO、O-Log
 - 视频处理：[FFmpeg](https://ffmpeg.org)
 
 ---
 
 ## English
 
-LUT Studio restores Log footage to Rec.709 and **batch-grades videos with 3D LUTs, Lightroom-style primary grading, color wheels, curves and multi-layer masks**. It ships a desktop-style web UI (dark theme, preview stage, media filmstrip, export queue) plus a CLI, and bundles 48 LUTs (Log restoration, Log-to-look, and Rec.709 look LUTs).
+LUT Studio restores Log footage to Rec.709 and **batch-grades videos with 3D LUTs, Lightroom-style primary grading, color wheels, curves and multi-layer masks**. It ships a desktop-style web UI (dark theme, preview stage, media filmstrip, export queue) plus a CLI, and bundles 53 LUTs (Log restoration, Log-to-look, and Rec.709 look LUTs).
 
 Stack: Python + Flask + FFmpeg; the frontend is a Vue 3 + Vite project whose build output is served by Flask.
 
@@ -357,14 +362,19 @@ npm run build       # bundles into ../web
 
 Directories drive the groups; new files show up after a page refresh, no code change or restart needed.
 
-**Restoration LUTs (primary)** — `luts/restore/`, 4 bundled:
+**Restoration LUTs (primary)** — `luts/restore/`, 9 bundled:
 
 | File | Display name |
 | --- | --- |
-| `DJI_DLogM_to_Rec709.cube` | DJI D-Log-M → Rec.709 |
-| `AppleLogToRec709-v1.0.cube` | Apple Log → Rec.709 |
-| `Apple Log To Rec709 Fix.cube` | Apple Log → Rec.709 (Fix) |
-| `Apple Log2 To Rec709.cube` | Apple Log 2 → Rec.709 |
+| `DJI DLogM To Rec.709.cube` | DJI D-Log-M → Rec.709 |
+| `DJI OSMO Pocket 4 D-Log to Rec.709.cube` | DJI Pocket 4 D-Log → Rec.709 |
+| `DJI OSMO Pocket 4P D-Log2 to Rec.709.cube` | DJI Pocket 4P D-Log2 → Rec.709 |
+| `Apple Log To Rec.709.cube` | Apple Log → Rec.709 |
+| `Apple Log To Rec.709 Fix.cube` | Apple Log → Rec.709 (Fix) |
+| `Apple Log2 To Rec.709.cube` | Apple Log 2 → Rec.709 |
+| `ViVO Log To Rec.709.cube` | ViVO Log → Rec.709 |
+| `O Log To Rec.709.cube` | O-Log → Rec.709 |
+| `O Log2 To Rec709.cube` | O-Log 2 → Rec.709 |
 
 **Log-to-look LUTs (primary)** — `luts/log_style/`; they take Log input and output Rec.709 + the look in one step, so no separate restoration LUT is needed. 23 bundled:
 
@@ -380,7 +390,7 @@ Directories drive the groups; new files show up after a page refresh, no code ch
 
 Notes:
 
-- Cards are labelled from filenames; the four restoration LUTs above have Chinese display names, everything else uses the raw stem
+- Cards are labelled from filenames; the nine restoration LUTs above have Chinese display names, everything else uses the raw stem
 - Creative thumbnails preview "current restoration LUT + that look LUT"
 - LUTs prefixed `Log -` expect Log input (all kept in `luts/log_style/`); same-named LUTs in `creative/` expect Rec.709 input. A Log-to-look LUT needs no separate restoration LUT; when stacking a look on already-restored footage, pick the `creative/` version
 
@@ -508,5 +518,5 @@ On first run the official DJI D-Log-M → Rec.709 LUT is downloaded into `luts/r
 
 MIT License
 
-- DJI Osmo Pocket 3 LUT: [DJI](https://www.dji.com)
+- Official LUTs: DJI (Pocket 3 / 4 / 4P), Apple, ViVO, O-Log
 - Video processing: [FFmpeg](https://ffmpeg.org)

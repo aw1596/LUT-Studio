@@ -181,10 +181,15 @@ def import_files():
 
 
 LUT_DISPLAY_NAMES = {
-    "DJI_DLogM_to_Rec709": "DJI D-Log-M → Rec.709",
-    "AppleLogToRec709-v1.0": "Apple Log → Rec.709",
-    "Apple Log To Rec709 Fix": "Apple Log → Rec.709 (Fix)",
-    "Apple Log2 To Rec709": "Apple Log 2 → Rec.709",
+    "DJI DLogM To Rec.709": "DJI D-Log-M → Rec.709",
+    "DJI OSMO Pocket 4 D-Log to Rec.709": "DJI Pocket 4 D-Log → Rec.709",
+    "DJI OSMO Pocket 4P D-Log2 to Rec.709": "DJI Pocket 4P D-Log2 → Rec.709",
+    "Apple Log To Rec.709": "Apple Log → Rec.709",
+    "Apple Log To Rec.709 Fix": "Apple Log → Rec.709 (Fix)",
+    "Apple Log2 To Rec.709": "Apple Log 2 → Rec.709",
+    "O Log To Rec.709": "O-Log → Rec.709",
+    "O Log2 To Rec709": "O-Log 2 → Rec.709",
+    "ViVO Log To Rec.709": "ViVO Log → Rec.709",
 }
 
 
