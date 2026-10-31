@@ -30,7 +30,7 @@ def get_video_fps(path):
 # === Paths (edit as needed) ===
 input_dir = r"C:\Users\User\OneDrive\Videos\Lyson"
 output_dir = os.path.join(input_dir, "converted")
-lut_path = r"C\\:/Users/User/OneDrive/Videos/Lyson/DJI_DLogM_to_REC709.cube"
+lut_path = r"C\:/Users/User/OneDrive/Videos/Lyson/DJI_DLogM_to_REC709.cube"
 
 # === Create output folder if it doesn't exist ===
 os.makedirs(output_dir, exist_ok=True)

@@ -15,7 +15,7 @@
 
 ## 中文
 
-LUT Studio 用于把 Log 视频还原为 Rec.709，并对普通视频做 **3D LUT 批量调色 + 一级调色 + 蒙版局部调色**（内置 DJI D-Log-M、Apple Log 等还原 LUT）。它提供一个桌面端风格的网页界面（深色主题、预览台、素材胶片条、导出队列）和一套命令行入口。
+LUT Studio 把 Log 视频还原为 Rec.709，并对普通视频做 **3D LUT 批量调色 + 一级调色 + 蒙版局部调色**。它提供一个桌面端风格的网页界面（深色主题、预览台、素材胶片条、导出队列）和一套命令行入口，内置 48 个 LUT（Log 还原、Log 直转风格化、Rec.709 风格 LUT）。
 
 技术栈：Python + Flask + FFmpeg；前端为 Vue 3 + Vite 工程，构建产物由 Flask 直接托管。
 
@@ -24,13 +24,13 @@ LUT Studio 用于把 Log 视频还原为 Rec.709，并对普通视频做 **3D LU
 **网页界面**（`server.py` + `frontend/`）
 
 - 桌面端布局：左侧功能栏、中央预览台、右侧属性面板、底部素材胶片条；面板宽度 / 胶片条高度可拖动调整
-- 预览缩放：滚轮以光标为中心缩放（1×–8×），放大后可拖动平移，双击或「缩放 100%」复位
+- 预览缩放：滚轮以光标为中心缩放（1×–8×），放大后可拖动平移，双击复位
 - 五个面板：素材 / 滤镜 / 调色 / 导出 / 任务
 - 素材扫描：填写文件夹即可列出视频（缩略图、时长、大小），支持全选 / 清空；路径可点「选择…」调用系统文件夹对话框
 - 胶片条：左右箭头 + 滚轮横向滚动
-- 滤镜画廊：每张卡片实时渲染「当前素材套用该 LUT 后」的画面（服务端渲染并缓存）
-- 滤镜强度 0–100%，支持二级 LUT 叠加（两级强度独立）
-- **Log 转 风格化**：`luts/log_style/` 中以 `for LOG` / `Log -` 命名的 LUT 单独成组，直接以 Log 素材为输入，一次完成还原 + 风格化
+- 滤镜画廊分三组：灰片还原 LUT（一级）、Log 转风格化 LUT（一级）、个性化 LUT（二级叠加）
+- 每张滤镜卡片实时渲染「当前素材套用该 LUT 后」的画面（服务端渲染并缓存）
+- 还原强度 / 二级强度各 0–100%，两级独立
 - **一级调色**：色温、色调、曝光、对比度、高光、阴影、白色、黑色、饱和度、自然饱和度、锐化
 - **色轮**：暗部 / 中间调 / 高光三段染色，双击归零
 - **色调曲线**：RGB 主通道 + R / G / B 四通道，Catmull-Rom 平滑；另有暗部 / 中间调 / 高光区域调整
@@ -104,12 +104,34 @@ npm run build       # 打包到 ../web，之后刷新 http://127.0.0.1:5000
 
 ### LUT 管理
 
-- 灰片还原 LUT：把 `.cube` 拷进 `luts/restore/`。仓库已带 `DJI_DLogM_to_Rec709.cube`、`AppleLogToRec709-v1.0.cube`、`Apple Log To Rec709 Fix.cube`、`Apple Log2 To Rec709.cube`。刷新页面即出现在「灰片还原 LUT（一级）」区，无需改代码或重启
-- Log 转 风格化 LUT：把 LUT 拷进 `luts/log_style/`。仓库已带 Analogica Lab Kodak 2383 的 LOG 版（D55 / D60 / D65）与 Pixflow CL Kodak 的 Log 版（Portra / Ektachrome / VISION3 等），在「Log 转 风格化（一级）」区显示
-- 个性化 LUT：把 `.cube` 拷进 `luts/creative/`，或在「滤镜」面板上传（上传文件也保存到该目录）。仓库已带 DJI Pocket 3 四季 Pro、Kodak 2383 的 Rec709 版、Pixflow Kodak 的 Standard Rec.709 版、赐福司影调 01–02、青青风格化 1–3
-- 页面按文件名展示；`DJI OSMO Pocket 3 xxx.cube` 会显示为 `xxx（Pocket 3 调色）`
+页面按目录自动分组，刷新即可显示新增文件，无需改代码或重启。
+
+**灰片还原 LUT（一级）** — `luts/restore/`，仓库内置 4 个：
+
+| 文件 | 页面显示 |
+| --- | --- |
+| `DJI_DLogM_to_Rec709.cube` | DJI D-Log-M → Rec.709 |
+| `AppleLogToRec709-v1.0.cube` | Apple Log → Rec.709 |
+| `Apple Log To Rec709 Fix.cube` | Apple Log → Rec.709 (Fix) |
+| `Apple Log2 To Rec709.cube` | Apple Log 2 → Rec.709 |
+
+**Log 转 风格化 LUT（一级）** — `luts/log_style/`，以 Log 素材为输入，一次完成还原 + 风格化（输出 Rec.709），选中后无需再叠加还原 LUT。仓库内置 23 个：
+
+- Apple Log 专用：`Apple Log - 赐福司影调`、`Apple Log - 风格化1/2/3`、`Apple Log2 - 赐福司影调`、`Apple Log2 - 风格化`
+- `Log -  ANALOGICAKDK2383 D55 / D60 / D65`
+- `Log -  Color Plus 200`、`EKTACHROME`、`Ektachrome E100`、`Elite Chrome 200`、`Gold 200`、`Kodak Ektar 100`、`Portra 160 / 400 / 800`、`Ultramax 400`、`VISION3 200T Color / 250D Color / 500T / 50D`
+
+**个性化 LUT（二级叠加）** — `luts/creative/`，输入为 Rec.709；「滤镜」面板上传的 LUT 也保存到这里。仓库内置 21 个：
+
+- `ANALOGICAKDK2383 D55 / D60 / D65`
+- DJI Pocket 3 四季 Pro：`Autumn Pro`、`Spring Pro`、`Summer Pro`、`Winter Pro`
+- `Color Plus 200`、`EKTACHROME`、`Ektachrome E100`、`Elite Chrome 200`、`Gold 200`、`Kodak Ektar 100`、`Portra 160 / 400 / 800`、`Ultramax 400`、`VISION3 200T Color / 250D Color / 500T / 50D`
+
+补充说明：
+
+- 页面按文件名展示；`luts/restore/` 里上述 4 个文件名有中文映射，其余显示原始文件名
 - 个性化卡片缩略图显示「当前还原 LUT + 该风格 LUT」的组合效果
-- 带 `LOG` 的 LUT 以 Log 素材为输入（统一放在 `luts/log_style/`）；带 `Rec709` 的以 Rec.709 素材为输入。套用 Log 风格化 LUT 后无需再加还原 LUT；已还原的画面叠加风格 LUT 时请选 Rec709 版本
+- 带 `Log -` 前缀的 LUT 以 Log 素材为输入（统一放在 `luts/log_style/`）；`creative/` 里的同名 LUT 以 Rec.709 素材为输入。套用 Log 风格化 LUT 后无需再加还原 LUT；已还原的画面叠加风格 LUT 时请选 `creative/` 版本
 
 ### 项目结构
 
@@ -130,9 +152,9 @@ LUT-Studio/
 │   ├── index.html
 │   └── assets/
 ├── luts/
-│   ├── restore/               # 灰片还原 LUT（D-Log-M / Apple Log 等）
-│   ├── log_style/             # Log 直转风格化 LUT（输入 Log，输出 Rec.709 + 风格）
-│   └── creative/              # 个性化风格 LUT（输入 Rec.709，页面后台上传也放这里）
+│   ├── restore/               # 灰片还原 LUT（一级）
+│   ├── log_style/             # Log 直转风格化 LUT（一级，输入 Log）
+│   └── creative/              # 个性化风格 LUT（二级叠加，输入 Rec.709）
 └── .gitignore                 # 忽略 node_modules、__pycache__ 与各类缓存
 ```
 
@@ -145,8 +167,8 @@ LUT-Studio/
 | GET | `/` | 单页界面 |
 | GET | `/api/gpu_status` | NVENC 是否可用及原因 |
 | GET | `/api/list_videos?dir=` | 列出目录内视频 |
-| GET | `/api/luts` | 内置与自定义 LUT 列表 |
-| POST | `/api/upload_lut` | 上传 `.cube` 到 `luts/` |
+| GET | `/api/luts` | LUT 列表（含 `kind`: `restore` / `log` / `creative`） |
+| POST | `/api/upload_lut` | 上传 `.cube` 到 `luts/creative/` |
 | POST | `/api/preview/ensure` | 获取可播放预览地址（HEVC 走 720p 代理） |
 | GET | `/api/preview_file?path=` | 支持 Range 的视频流 |
 | GET | `/api/thumb` | 单帧缩略图，支持 `lut` / `lut2` / `strength` / `grading` / `masks` |
@@ -155,6 +177,7 @@ LUT-Studio/
 | POST | `/api/convert` | 提交批量转换，返回 `batch_id` |
 | GET | `/api/batches` | 所有批次与逐文件状态 |
 | POST | `/api/stop_all` | 停止全部转换 |
+| GET | `/api/write_test?path=` | 诊断：测试服务进程对指定路径的写权限 |
 
 `grading` 与 `masks` 既可传 JSON 字符串（`/api/thumb` 的 query），也可直接传对象（POST body）。单蒙版的旧参数 `mask` 仍然兼容。
 
@@ -223,8 +246,9 @@ python main.py
 ### 使用建议
 
 - 大批量只做 Log 还原、不需要逐条细调时，直接用命令行版本（`python main.py`）更省事
-- 顺序：先「D-Log-M → Rec.709」全量还原，再用风格 LUT 并降低强度（如 30–50%）
-- 四季 Pro 系列 LUT 面向 **Rec.709 输入**，直接套在 D-Log-M 原片上色彩会失真
+- 顺序：先「D-Log-M → Rec.709」全量还原，再从 `creative/` 套用风格 LUT 并降低强度（如 30–50%）
+- Log 素材也可以直接用 `log_style/` 的 LUT，一步完成还原 + 风格化
+- `creative/` 里的 LUT 面向 **Rec.709 输入**，直接套在 Log 原片上色彩会失真
 - 10bit 素材建议保持 10bit 输出（HEVC），避免色深损失
 - 局部调色时把羽化调大一些，过渡更自然；蒙版外的画面完全不受影响
 
@@ -239,7 +263,7 @@ MIT License
 
 ## English
 
-LUT Studio restores Log footage to Rec.709 and **batch-grades videos with 3D LUTs, Lightroom-style primary grading, color wheels, curves and multi-layer masks** (bundled DJI D-Log-M and Apple Log restoration LUTs). It ships a desktop-style web UI (dark theme, preview stage, media filmstrip, export queue) plus a CLI.
+LUT Studio restores Log footage to Rec.709 and **batch-grades videos with 3D LUTs, Lightroom-style primary grading, color wheels, curves and multi-layer masks**. It ships a desktop-style web UI (dark theme, preview stage, media filmstrip, export queue) plus a CLI, and bundles 48 LUTs (Log restoration, Log-to-look, and Rec.709 look LUTs).
 
 Stack: Python + Flask + FFmpeg; the frontend is a Vue 3 + Vite project whose build output is served by Flask.
 
@@ -250,13 +274,13 @@ Repository: <https://github.com/aw1596/LUT-Studio>
 **Web UI** (`server.py` + `frontend/`)
 
 - Desktop layout: left tool rail, center preview stage, right inspector, bottom filmstrip; resizable inspector width and filmstrip height
-- Preview zoom: wheel zooms around the cursor (1×–8×), drag to pan, double-click or "缩放 100%" to reset
+- Preview zoom: wheel zooms around the cursor (1×–8×), drag to pan, double-click to reset
 - Five panels: Media / Filter / Color / Export / Tasks
 - Media scanning: point at a folder, clips are listed with thumbnail, duration and size; select all / clear; native folder picker
 - Filmstrip navigation: arrow buttons plus horizontal wheel scrolling
-- Filter gallery: every card shows the actual current clip with that LUT applied (rendered and cached server-side)
-- Filter strength 0–100% plus a secondary chained LUT with its own strength
-- **Log to look**: LUTs named `for LOG` / `Log -` live in `luts/log_style/` and get their own group; they take Log input and output Rec.709 + the look in one step
+- Filter gallery in three groups: restoration LUTs (primary), Log-to-look LUTs (primary), creative LUTs (secondary stack)
+- Every filter card shows the actual current clip with that LUT applied (rendered and cached server-side)
+- Restoration strength and secondary strength, each 0–100%, independent of each other
 - **Primary grading**: temperature, tint, exposure, contrast, highlights, shadows, whites, blacks, saturation, vibrance, sharpness
 - **Color wheels**: shadows / midtones / highlights, double-click to reset
 - **Tone curves**: master + R / G / B channels, Catmull-Rom smoothing, plus shadows / midtones / highlights region sliders
@@ -328,12 +352,34 @@ npm run build       # bundles into ../web
 
 ### Managing LUTs
 
-- Restoration LUTs: copy `.cube` files into `luts/restore/`. The repo bundles `DJI_DLogM_to_Rec709.cube`, `AppleLogToRec709-v1.0.cube`, `Apple Log To Rec709 Fix.cube` and `Apple Log2 To Rec709.cube`. Refresh the page and they appear, no restart needed
-- Log-to-look LUTs: copy files into `luts/log_style/`. The repo bundles the LOG versions of Analogica Lab Kodak 2383 (D55 / D60 / D65) and Pixflow CL Kodak (Portra / Ektachrome / VISION3 etc.); they show up in the "Log to look (primary)" group
-- Creative LUTs: copy files into `luts/creative/`, or upload them from the Filter panel. Bundled sets include DJI Pocket 3 seasonal Pro LUTs, Kodak 2383 Rec709 versions, Pixflow Kodak Standard Rec.709 versions, 赐福司影调 01–02 and 青青风格化 1–3
-- Cards are labelled from filenames; `DJI OSMO Pocket 3 xxx.cube` shows as `xxx (Pocket 3 look)`
+Directories drive the groups; new files show up after a page refresh, no code change or restart needed.
+
+**Restoration LUTs (primary)** — `luts/restore/`, 4 bundled:
+
+| File | Display name |
+| --- | --- |
+| `DJI_DLogM_to_Rec709.cube` | DJI D-Log-M → Rec.709 |
+| `AppleLogToRec709-v1.0.cube` | Apple Log → Rec.709 |
+| `Apple Log To Rec709 Fix.cube` | Apple Log → Rec.709 (Fix) |
+| `Apple Log2 To Rec709.cube` | Apple Log 2 → Rec.709 |
+
+**Log-to-look LUTs (primary)** — `luts/log_style/`; they take Log input and output Rec.709 + the look in one step, so no separate restoration LUT is needed. 23 bundled:
+
+- Apple Log: `Apple Log - 赐福司影调`, `Apple Log - 风格化1/2/3`, `Apple Log2 - 赐福司影调`, `Apple Log2 - 风格化`
+- `Log -  ANALOGICAKDK2383 D55 / D60 / D65`
+- `Log -  Color Plus 200`, `EKTACHROME`, `Ektachrome E100`, `Elite Chrome 200`, `Gold 200`, `Kodak Ektar 100`, `Portra 160 / 400 / 800`, `Ultramax 400`, `VISION3 200T Color / 250D Color / 500T / 50D`
+
+**Creative LUTs (secondary stack)** — `luts/creative/`, expect Rec.709 input; LUTs uploaded from the Filter panel are saved here too. 21 bundled:
+
+- `ANALOGICAKDK2383 D55 / D60 / D65`
+- DJI Pocket 3 seasonal Pro: `Autumn Pro`, `Spring Pro`, `Summer Pro`, `Winter Pro`
+- `Color Plus 200`, `EKTACHROME`, `Ektachrome E100`, `Elite Chrome 200`, `Gold 200`, `Kodak Ektar 100`, `Portra 160 / 400 / 800`, `Ultramax 400`, `VISION3 200T Color / 250D Color / 500T / 50D`
+
+Notes:
+
+- Cards are labelled from filenames; the four restoration LUTs above have Chinese display names, everything else uses the raw stem
 - Creative thumbnails preview "current restoration LUT + that look LUT"
-- LUTs named `LOG` expect Log input (all kept in `luts/log_style/`); those named `Rec709` expect Rec.709 input. A Log-to-look LUT needs no separate restoration LUT; when stacking a look on already-restored footage, pick the `Rec709` version
+- LUTs prefixed `Log -` expect Log input (all kept in `luts/log_style/`); same-named LUTs in `creative/` expect Rec.709 input. A Log-to-look LUT needs no separate restoration LUT; when stacking a look on already-restored footage, pick the `creative/` version
 
 ### Project structure
 
@@ -354,9 +400,9 @@ LUT-Studio/
 │   ├── index.html
 │   └── assets/
 ├── luts/
-│   ├── restore/               # Log-restoration LUTs (D-Log-M / Apple Log)
-│   ├── log_style/             # Log-to-look LUTs (Log input → Rec.709 + look)
-│   └── creative/              # Creative look LUTs (Rec.709 input; UI uploads land here too)
+│   ├── restore/               # Restoration LUTs (primary)
+│   ├── log_style/             # Log-to-look LUTs (primary, Log input)
+│   └── creative/              # Creative look LUTs (secondary stack, Rec.709 input)
 └── .gitignore                 # Ignores node_modules, __pycache__ and caches
 ```
 
@@ -369,8 +415,8 @@ At runtime the app creates `_thumb_cache/`, `_base_cache/`, `_mask_cache/`, `_gr
 | GET | `/` | Single-page UI |
 | GET | `/api/gpu_status` | Whether NVENC is usable, and why not |
 | GET | `/api/list_videos?dir=` | List videos in a folder |
-| GET | `/api/luts` | Built-in and custom LUTs |
-| POST | `/api/upload_lut` | Upload a `.cube` into `luts/` |
+| GET | `/api/luts` | LUT list with `kind`: `restore` / `log` / `creative` |
+| POST | `/api/upload_lut` | Upload a `.cube` into `luts/creative/` |
 | POST | `/api/preview/ensure` | Playable preview URL (HEVC gets a 720p proxy) |
 | GET | `/api/preview_file?path=` | Range-capable video stream |
 | GET | `/api/thumb` | Single-frame thumbnail; accepts `lut` / `lut2` / `strength` / `grading` / `masks` |
@@ -379,6 +425,7 @@ At runtime the app creates `_thumb_cache/`, `_base_cache/`, `_mask_cache/`, `_gr
 | POST | `/api/convert` | Submit a batch, returns `batch_id` |
 | GET | `/api/batches` | All batches and per-file status |
 | POST | `/api/stop_all` | Stop all conversions |
+| GET | `/api/write_test?path=` | Diagnostics: test write access from the server process |
 
 `grading` and `masks` can be JSON strings (query params for `/api/thumb`) or plain objects (POST body). The legacy single-mask `mask` parameter is still accepted.
 
@@ -447,8 +494,9 @@ On first run the official DJI D-Log-M → Rec.709 LUT is downloaded into `luts/r
 ### Recommended workflow
 
 - Bulk log-restoration only? Run the CLI (`python main.py`) instead
-- Chain order: «D-Log-M → Rec.709» at full strength first, then a look LUT at reduced strength (e.g. 30–50%)
-- The seasonal Pro LUTs expect **Rec.709 input**; applying them to D-Log-M shifts colors incorrectly
+- Chain order: «D-Log-M → Rec.709» at full strength first, then a look LUT from `creative/` at reduced strength (e.g. 30–50%)
+- Log footage can also use a `log_style/` LUT directly to do restoration + look in one step
+- LUTs in `creative/` expect **Rec.709 input**; applying them to Log footage shifts colors incorrectly
 - Keep 10bit footage at 10bit (HEVC) output to avoid losing color depth
 - For local grading, raise the feather a little for a smoother falloff
 

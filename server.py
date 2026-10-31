@@ -30,6 +30,7 @@ GRADING_CACHE_DIR = os.path.join(BASE_DIR, "_grading_cache")
 BASE_CACHE_DIR = os.path.join(BASE_DIR, "_base_cache")  # 解码后的单帧原图，调参时复用
 os.makedirs(LUTS_DIR, exist_ok=True)
 os.makedirs(RESTORE_LUTS_DIR, exist_ok=True)
+os.makedirs(LOG_STYLE_LUTS_DIR, exist_ok=True)
 os.makedirs(CREATIVE_LUTS_DIR, exist_ok=True)
 os.makedirs(PREVIEW_CACHE_DIR, exist_ok=True)
 os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
@@ -143,16 +144,17 @@ def list_videos():
 LUT_DISPLAY_NAMES = {
     "DJI_DLogM_to_Rec709": "DJI D-Log-M → Rec.709",
     "AppleLogToRec709-v1.0": "Apple Log → Rec.709",
+    "Apple Log To Rec709 Fix": "Apple Log → Rec.709 (Fix)",
+    "Apple Log2 To Rec709": "Apple Log 2 → Rec.709",
 }
 
 
 def lut_display_name(filename):
-    stem = filename[:-5] if filename.lower().endswith('.cube') else filename
-    if stem in LUT_DISPLAY_NAMES:
-        return LUT_DISPLAY_NAMES[stem]
-    if stem.startswith("DJI OSMO Pocket 3 "):
-        return stem.replace("DJI OSMO Pocket 3 ", "") + "（Pocket 3 调色）"
-    return stem
+    # 兼容被重复改名成 xxx.cube.cube 的文件：剥掉所有 .cube 后缀再显示
+    stem = filename
+    while stem.lower().endswith('.cube'):
+        stem = stem[:-5]
+    return LUT_DISPLAY_NAMES.get(stem, stem)
 
 
 def _scan_lut_dir(directory, kind):
