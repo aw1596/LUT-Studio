@@ -126,6 +126,13 @@ const app = reactive({
   previewingLut: false,
   previewLoading: false,
   previewText: '正在生成调色预览…',
+  // 播放用低画质片段缓存：蒙版编辑稳定后后台预渲染，播放时直接命中
+  playCacheUrl: '',
+  playCacheKey: '',
+  playWarming: false,
+  warmTimer: null,
+  warmTask: null,
+  previewLow: false,
   thumbLoading: false,
   mainThumbUrl: '',
   compare: false,
@@ -217,7 +224,8 @@ app.lutLabel = computed(() => {
   return label
 })
 app.resolutionText = computed(() => ({ original: '原始分辨率', '1080p': '1080p', '720p': '720p' }[app.resolution]))
-app.canStart = computed(() => app.sel.length > 0 && (app.customLut || app.lutPath) &&
+app.canPreview = computed(() => !!(app.activeLutPath() || app.hasAdjust))
+app.canStart = computed(() => app.sel.length > 0 && (app.customLut || app.lutPath || app.hasAdjust) &&
   (!app.useSecondLut || app.lut2Path) &&
   (app.outputMode !== 'custom' || app.customDir))
 app.batchesReversed = computed(() => [...app.batches].reverse())
@@ -544,6 +552,7 @@ app.thumbUrl = (opts) => {
   const o = Object.assign({ path: app.currentPath, w: 480 }, opts || {})
   if (!o.path) return ''
   const q = new URLSearchParams({ path: o.path, w: o.w })
+  if (o.first) q.set('first', '1')  // 素材封面取第一帧
   if (o.lut) {
     q.set('lut', o.lut)
     q.set('strength', o.strength !== undefined ? o.strength : 100)
@@ -585,14 +594,62 @@ app.refreshPreview = (immediate) => {
   if (!app.currentPath) return
   clearTimeout(app.thumbTimer)
   app.thumbLoading = true
-  // 拖动滑杆时按最短间隔节流刷新，松手（immediate）立即出图
-  const wait = immediate ? 0 : Math.max(0, 250 - (Date.now() - (app.lastThumbAt || 0)))
+  // 拖动滑杆/蒙版时按最短间隔单帧刷新，松手（immediate）立即出图
+  const wait = immediate ? 0 : Math.max(0, 150 - (Date.now() - (app.lastThumbAt || 0)))
   app.thumbTimer = setTimeout(() => {
     app.lastThumbAt = Date.now()
     if (app.compare) app.setOriginalThumb()
     else app.setCurrentThumb()
     if (!app.currentPath) app.thumbLoading = false
   }, wait)
+  if (app.allMasks().length) app.scheduleWarmPreview()
+}
+
+// 当前要渲染的参数（与 /api/preview_graded 的请求体一致，用于命中预渲染缓存）
+app.previewParams = () => ({
+  path: app.currentPath,
+  lut_path: app.activeLutPath(),
+  lut_strength: app.lutStrength,
+  lut_path2: app.useSecondLut ? app.lut2Path : '',
+  lut_strength2: app.lutStrength2,
+  grading: app.grading,
+  masks: app.allMasks(),
+})
+
+// 蒙版编辑停止后，后台预渲染低画质片段；播放时命中缓存即可秒开
+app.scheduleWarmPreview = () => {
+  clearTimeout(app.warmTimer)
+  if (!app.currentPath || !app.allMasks().length) return
+  app.warmTimer = setTimeout(() => app.warmPreview(), 1500)
+}
+
+app.warmPreview = async () => {
+  if (!app.currentPath || app.maskDragging || app.playing || app.previewLoading || app.playWarming) return
+  const params = app.previewParams()
+  const key = JSON.stringify(params)
+  if (app.playCacheKey === key && app.playCacheUrl) return
+  app.playWarming = true
+  let ok = false
+  try {
+    app.warmTask = fetch('/api/preview_graded', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({}, params, { quality: 'low', render_gpu: app.useGpu })),
+    }).then(r => r.json().catch(() => ({})))
+    const d = await app.warmTask
+    if (d.url) {
+      ok = true
+      app.playCacheUrl = d.url
+      app.playCacheKey = key
+    }
+  } catch (e) {
+    // 预渲染失败不影响正常操作，播放时会再尝试一次
+  } finally {
+    app.playWarming = false
+    app.warmTask = null
+    // 预渲染期间参数又变了且这次成功，等编辑稳定后再预热最新参数
+    if (ok && app.playCacheKey !== JSON.stringify(app.previewParams())) app.scheduleWarmPreview()
+  }
 }
 
 // 调用系统文件夹选择框（服务端弹窗），结果写回输入框
@@ -603,14 +660,18 @@ app.pickDir = async (target, title) => {
     const r = await fetch('/api/pick_dir', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, initial }),
+      body: JSON.stringify({ title, initial, mode: target === 'input' ? 'file' : 'dir' }),
     })
     const d = await r.json().catch(() => ({}))
     if (!r.ok) return ElMessage.error(d.error || '打开选择框失败')
     const p = (d.path || '').trim()
     if (!p) return
-    if (target === 'input') app.inputDir = p
-    else app.customDir = p
+    if (target === 'input') {
+      app.inputDir = p
+      await app.scanDir()  // 选好文件夹后直接列出该目录下的视频
+    } else {
+      app.customDir = p
+    }
   } catch (e) {
     ElMessage.error('打开选择框失败：' + e.message)
   } finally {
@@ -737,13 +798,18 @@ app.toggleClip = (f) => {
   app.refreshPreview()
 }
 
+// 胶片条中的素材已全部选中，点击只切换当前预览素材
+app.focusClip = (f) => {
+  app.currentPath = f.path
+  app.refreshPreview()
+}
+
 app.selectAll = () => { app.sel = app.files.map(f => f.path) }
 
 app.loadLuts = async () => {
   const r = await fetch('/api/luts')
   const d = await r.json()
   app.luts = d.luts
-  if (!app.lutPath && app.luts.length) app.lutPath = app.luts[0].path
 }
 
 app.loadGpuStatus = async () => {
@@ -785,29 +851,41 @@ app.onLutUploadError = () => { ElMessage.error('LUT 上传失败，仅支持 .cu
 // ---------- 播放 ----------
 app.playGraded = async () => {
   if (!app.currentPath) return
+  clearTimeout(app.warmTimer)
+  const params = app.previewParams()
+  const key = JSON.stringify(params)
+  // 正在后台预渲染同样的参数，等它完成直接命中缓存，避免重复跑一遍 ffmpeg
+  if (app.playWarming && app.warmTask && app.playCacheKey !== key) {
+    try { await app.warmTask } catch (e) { /* 失败则继续走下面的实时生成 */ }
+  }
+  // 蒙版编辑后已在后台预渲染过这段低画质预览，直接播放，不再等待
+  if (app.playCacheKey === key && app.playCacheUrl) {
+    app.playTime = 0
+    app.playDuration = 0
+    app.playUrl = app.playCacheUrl
+    app.previewingLut = true
+    app.previewLow = true
+    return
+  }
   app.previewLoading = true
-  app.previewText = '正在生成调色预览（首次需几秒）…'
+  app.previewText = '正在生成快速预览（低画质）…'
   try {
     const r = await fetch('/api/preview_graded', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        path: app.currentPath,
-        lut_path: app.activeLutPath(),
-        lut_strength: app.lutStrength,
-        lut_path2: app.useSecondLut ? app.lut2Path : '',
-        lut_strength2: app.lutStrength2,
-        grading: app.grading,
-        masks: app.allMasks(),
-        render_gpu: app.useGpu,
-      }),
+      body: JSON.stringify(Object.assign({}, params, { quality: 'low', render_gpu: app.useGpu })),
     })
     const d = await r.json()
     if (d.error) { ElMessage.error(d.error); return }
+    if (d.url) {
+      app.playCacheUrl = d.url
+      app.playCacheKey = key
+    }
     app.playTime = 0
     app.playDuration = 0
     app.playUrl = d.url
     app.previewingLut = true
+    app.previewLow = true
   } catch (e) {
     ElMessage.error('预览请求失败：' + e)
   } finally {
@@ -831,6 +909,7 @@ app.playOriginal = async () => {
     app.playDuration = 0
     app.playUrl = d.url
     app.previewingLut = false
+    app.previewLow = false
   } catch (e) {
     ElMessage.error('预览请求失败：' + e)
   } finally {
@@ -843,6 +922,7 @@ app.stopPlay = () => {
   app.playTime = 0
   app.playDuration = 0
   app.playing = false
+  app.previewLow = false
 }
 
 app.onPlayEnded = () => {
@@ -957,7 +1037,13 @@ watch(() => app.maskDraft, () => {
 watch(() => app.mainThumbUrl, () => nextTick(app.updateMaskBox))
 watch(() => app.playUrl, () => nextTick(app.updateMaskBox))
 watch(() => app.tab, () => nextTick(app.updateMaskBox))
-watch(() => app.currentPath, () => app.resetZoom())
+watch(() => app.currentPath, () => {
+  app.resetZoom()
+  // 换片后旧的预渲染片段不再适用
+  clearTimeout(app.warmTimer)
+  app.playCacheUrl = ''
+  app.playCacheKey = ''
+})
 watch(() => app.compare, (v) => {
   if (v) app.setOriginalThumb()
   else app.setCurrentThumb()

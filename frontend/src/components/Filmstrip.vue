@@ -7,6 +7,8 @@ const app = inject('app')
 const scale = computed(() => Math.max(1, app.layout.bin / 176))
 const clipStyle = computed(() => ({ width: (148 * scale.value).toFixed(1) + 'px' }))
 const coverStyle = computed(() => ({ height: (80 * scale.value).toFixed(1) + 'px' }))
+// 胶片条只显示已选中的素材，导入的全部素材在右侧素材界面查看
+const pickedFiles = computed(() => app.files.filter(f => app.sel.includes(f.path)))
 </script>
 
 <template>
@@ -20,12 +22,12 @@ const coverStyle = computed(() => ({ height: (80 * scale.value).toFixed(1) + 'px
     </div>
     <div class="bin-body">
       <div class="bin-strip" :ref="el => (app.binStrip = el)" @wheel="app.onBinWheel" @scroll="app.updateBinNav">
-        <div class="empty-line" style="width:100%" v-if="!app.files.length">
-          扫描文件夹后，视频会以胶片条形式显示在这里
+        <div class="empty-line" style="width:100%" v-if="!pickedFiles.length">
+          在右侧素材界面中勾选素材后，会以胶片条形式显示在这里
         </div>
-        <div class="clip" v-for="f in app.files" :key="f.path" :style="clipStyle"
-             :class="{ current: app.currentPath === f.path, picked: app.sel.includes(f.path) }"
-             @click="app.toggleClip(f)">
+        <div class="clip" v-for="f in pickedFiles" :key="f.path" :style="clipStyle"
+             :class="{ current: app.currentPath === f.path }"
+             @click="app.focusClip(f)">
           <img class="cover" :style="coverStyle" :src="app.thumbUrl({ path: f.path, w: 220 })" loading="lazy" alt="">
           <span class="dur">{{ app.fmtDur(f.duration) }}</span>
           <div class="meta">

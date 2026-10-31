@@ -1136,29 +1136,50 @@ def ensure_base_frame(video, seek, size):
 
 @app.route('/api/pick_dir', methods=['POST'])
 def pick_dir():
-    """弹出系统文件夹选择框（本工具为本地单机应用，选择框由服务端所在的桌面弹出）"""
+    """弹出系统选择框（本工具为本地单机应用，选择框由服务端所在的桌面弹出）
+
+    mode=file：文件选择框，框内直接列出视频文件；返回所选文件所在目录
+    mode=dir ：文件夹选择框
+    """
     data = request.get_json(force=True, silent=True) or {}
     title = str(data.get('title') or '选择文件夹')
     initial = str(data.get('initial') or '').strip().strip('"')
+    mode = str(data.get('mode') or '').strip().lower()
     if not os.path.isdir(initial):
         initial = BASE_DIR
-    script = (
-        "import tkinter as tk\n"
-        "from tkinter import filedialog\n"
-        "root = tk.Tk()\n"
-        "root.withdraw()\n"
-        "root.attributes('-topmost', True)\n"
-        "root.update()\n"
-        "p = filedialog.askdirectory(parent=root, title=%r, initialdir=%r)\n"
-        "print(p or '')\n" % (title, initial)
-    )
+    if mode == 'file':
+        script = (
+            "import tkinter as tk\n"
+            "from tkinter import filedialog\n"
+            "root = tk.Tk()\n"
+            "root.withdraw()\n"
+            "root.attributes('-topmost', True)\n"
+            "root.update()\n"
+            "p = filedialog.askopenfilename(parent=root, title=%r, initialdir=%r, "
+            "filetypes=[('视频文件', '*.mp4 *.mov *.mkv *.avi *.mxf *.webm'), ('所有文件', '*.*')])\n"
+            "print(p or '')\n" % (title, initial)
+        )
+    else:
+        script = (
+            "import tkinter as tk\n"
+            "from tkinter import filedialog\n"
+            "root = tk.Tk()\n"
+            "root.withdraw()\n"
+            "root.attributes('-topmost', True)\n"
+            "root.update()\n"
+            "p = filedialog.askdirectory(parent=root, title=%r, initialdir=%r)\n"
+            "print(p or '')\n" % (title, initial)
+        )
     try:
         r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
                            encoding='utf-8', errors='replace', timeout=600)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     lines = [l for l in (r.stdout or '').splitlines() if l.strip()]
-    return jsonify({"path": lines[-1].strip() if lines else ''})
+    path = lines[-1].strip() if lines else ''
+    if path and mode == 'file':
+        path = os.path.dirname(path)
+    return jsonify({"path": path})
 
 
 @app.route('/api/thumb')
@@ -1169,6 +1190,7 @@ def thumb():
         return jsonify({"error": "文件不存在"}), 404
     lut = request.args.get('lut', '').strip().strip('"')
     lut2 = request.args.get('lut2', '').strip().strip('"')
+    first = str(request.args.get('first') or '').lower() in ('1', 'true', 'yes')
     s1 = max(0, min(100, int(request.args.get('strength', 100))))
     s2 = max(0, min(100, int(request.args.get('strength2', 100))))
     w = max(160, min(720, int(request.args.get('w', 320))))
@@ -1187,12 +1209,13 @@ def thumb():
         size = (w, max(2, int(round(info["height"] * w / float(info["width"]) / 2)) * 2))
     layers = mask_render_list(masks) if size else []
     try:
-        ensure_mask_layers(layers, size[0], size[1])
+        if layers:
+            ensure_mask_layers(layers, size[0], size[1])
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 500
 
     key = _cache_key('thumb', video, _file_mtime(video), lut, _file_mtime(lut),
-                     lut2, _file_mtime(lut2), s1, s2, w, size,
+                     lut2, _file_mtime(lut2), s1, s2, w, size, first,
                      json.dumps(grading, sort_keys=True),
                      json.dumps(masks, sort_keys=True) if layers else '')
     out = os.path.join(THUMB_CACHE_DIR, key + ".jpg")
@@ -1207,7 +1230,8 @@ def thumb():
         seek = 0.0
         if size:
             dur = info["duration"] or 0
-            seek = min(3.0, dur * 0.3) if dur > 2 else 0.0
+            # first=1 时取第一帧，用于素材列表的封面
+            seek = 0.0 if first else (min(3.0, dur * 0.3) if dur > 2 else 0.0)
             try:
                 # 先取一张缓存好的原片帧，后续调参只需要重跑滤镜，不用再解码视频
                 src = ensure_base_frame(video, seek, size)
@@ -1236,7 +1260,11 @@ def thumb():
 
 @app.route('/api/preview_graded', methods=['POST'])
 def preview_graded():
-    """生成一段 8 秒 720p 的调色预览片段（含强度/双 LUT），用于播放真实滤镜效果"""
+    """生成一段 8 秒的调色预览片段（含强度/双 LUT）。
+
+    quality=high：540p/30fps，用于正式预览；
+    quality=low：360p/24fps，用于播放时的快速低画质预览（可被前端预渲染缓存）。
+    """
     data = request.get_json(force=True)
     video = (data.get('path') or '').strip().strip('"')
     if not os.path.isfile(video):
@@ -1249,19 +1277,26 @@ def preview_graded():
         return jsonify({"error": "LUT 不存在"}), 404
     if lut2 and not os.path.isfile(lut2):
         return jsonify({"error": "第二个 LUT 不存在"}), 404
+    quality = 'low' if str(data.get('quality') or '').lower() == 'low' else 'high'
 
     grading, masks = prepare_adjustments(data)
     info = probe_video(video)
     size = None
+    fps_cap = 30
     if info["width"] and info["height"]:
-        size = (max(2, int(round(info["width"] * 720 / float(info["height"]) / 2)) * 2), 720)
+        # 预览只用于屏幕上看效果（播放器区域约 700px 宽）：
+        # 正式预览 540p；快速预览 360p + 24fps，耗时再降一半以上
+        ph = min(360 if quality == 'low' else 540, info["height"])
+        fps_cap = 24 if quality == 'low' else 30
+        size = (max(2, int(round(info["width"] * ph / float(info["height"]) / 2)) * 2), ph)
     layers = mask_render_list(masks) if size else []
     try:
-        ensure_mask_layers(layers, size[0], size[1])
+        if layers:
+            ensure_mask_layers(layers, size[0], size[1])
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 500
     key = _cache_key('graded', video, _file_mtime(video), lut, _file_mtime(lut),
-                     lut2, _file_mtime(lut2), s1, s2, size,
+                     lut2, _file_mtime(lut2), s1, s2, size, fps_cap,
                      json.dumps(grading, sort_keys=True),
                      json.dumps(masks, sort_keys=True) if layers else '')
     out = os.path.join(PREVIEW_CACHE_DIR, key + ".mp4")
@@ -1273,7 +1308,7 @@ def preview_graded():
             stages.append((lut2, s2))
         graph = build_filter_graph(stages, 'gbrp', 'yuv420p',
                                    size=size, grading=grading, mask_layers=layers,
-                                   scale_flags='bilinear', fps_cap=30)
+                                   scale_flags='bilinear', fps_cap=fps_cap)
         mask_inputs = []
         for layer in layers:
             # 预览最长 8 秒，蒙版读取上限 20 秒即可，避免源无帧时死循环
@@ -1294,10 +1329,14 @@ def preview_graded():
             cmd += ["-i", video] + mask_inputs
             if mode in ('hw', 'gpu'):
                 # 编码交由显卡（NVENC）；滤镜仍走 CPU，避免帧回读带来的额外开销
-                cmd += ["-c:v", "h264_nvenc", "-preset", "p2", "-tune", "hq",
-                        "-rc", "vbr", "-cq", "23", "-b:v", "0"]
+                preset, cq = ('p1', '30') if quality == 'low' else ('p2', '23')
+                cmd += ["-c:v", "h264_nvenc", "-preset", preset, "-tune", "hq",
+                        "-rc", "vbr", "-cq", cq, "-b:v", "0"]
             else:
-                cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"]
+                if quality == 'low':
+                    cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "32"]
+                else:
+                    cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"]
             return subprocess.run(cmd + body, capture_output=True, text=True,
                                   encoding='utf-8', errors='replace', timeout=300)
 
@@ -1354,7 +1393,7 @@ def convert():
 
     if not files:
         return jsonify({"error": "未选择文件"}), 400
-    if not os.path.isfile(lut_path):
+    if lut_path and not os.path.isfile(lut_path):
         return jsonify({"error": "LUT 文件不存在"}), 400
     if lut_path2 and not os.path.isfile(lut_path2):
         return jsonify({"error": "第二个 LUT 文件不存在"}), 400
@@ -1363,8 +1402,12 @@ def convert():
     if use_gpu and not NVENC_OK:
         return jsonify({"error": f"GPU 编码不可用：{NVENC_MSG}。请改用 CPU 模式，或升级 NVIDIA 驱动后重启本服务。"}), 400
 
-    stop_event.clear()  # 新任务开始前清除停止标志
     grading, masks = prepare_adjustments(data)
+    # 不套用 LUT 时，至少要有调色/蒙版调整，否则导出没有意义
+    if not lut_path and not lut_path2 and is_neutral_grading(grading) and not active_masks(masks):
+        return jsonify({"error": "未选择 LUT，且调色参数均为默认值，没有可导出的调整"}), 400
+
+    stop_event.clear()  # 新任务开始前清除停止标志
     batch_id = uuid.uuid4().hex[:8]
     items = []
     for input_path in files:

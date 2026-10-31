@@ -13,6 +13,7 @@ const app = inject('app')
       <div class="player-tag" v-if="app.currentClip">
         <span class="name">{{ app.currentClip.name }}</span>
         <span v-if="app.previewingLut" style="color:var(--accent-2)">LUT 预览</span>
+        <span v-if="app.previewLow && app.playUrl" style="color:#e6a23c">快速预览</span>
         <span v-if="app.hasAdjust" style="color:var(--accent)">已调色</span>
       </div>
       <div class="compare-hold" v-if="app.currentClip && app.showThumb"
@@ -62,7 +63,7 @@ const app = inject('app')
     </div>
 
     <div class="player-bar">
-      <el-button size="small" :disabled="!app.currentClip || !app.lutPath" @click="app.playGraded" :loading="app.previewLoading">
+      <el-button size="small" :disabled="!app.currentClip || !app.canPreview" @click="app.playGraded" :loading="app.previewLoading">
         播放调色预览
       </el-button>
       <el-button size="small" :disabled="!app.currentClip" @click="app.playOriginal">播放原片</el-button>
