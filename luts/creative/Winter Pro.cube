@@ -1,11 +1,5 @@
-#Generated with IWLTBAP LUT Generator
-#Website: http://luts.iwltbap.com
-TITLE "Ñ©Ìì2"
-
-#LUT size
+TITLE "aw Winter Pro"
 LUT_3D_SIZE 64
-
-#LUT data points
 0.000000 0.000000 0.000000
 0.027451 0.000000 0.000000
 0.050980 0.000000 0.000000
