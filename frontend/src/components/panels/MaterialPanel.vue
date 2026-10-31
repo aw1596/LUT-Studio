@@ -13,10 +13,10 @@ const app = inject('app')
       <el-button :loading="app.pickingDir" @click="app.pickDir('input', '选择视频文件夹')">选择…</el-button>
       <el-button type="primary" :loading="app.scanning" @click="app.scanDir">扫描</el-button>
     </div>
-    <div class="hint">支持 mp4 / mov / mkv / avi / mxf / webm。扫描后可点击底部素材卡片勾选。</div>
+    <div class="hint">支持 mp4 / mov / mkv / avi / mxf / webm。也可直接把视频拖进窗口，或复制后在页面按 Ctrl+V 粘贴导入（文件会复制到项目 <code>_imports/</code> 目录）。</div>
 
     <div class="group-title">已导入</div>
-    <div class="hint" v-if="!app.files.length">暂无素材。填写路径后点击扫描。</div>
+    <div class="hint" v-if="!app.files.length">暂无素材。填写路径后点击扫描，或直接拖拽 / 粘贴视频文件。</div>
     <template v-else>
       <div class="row" style="justify-content: space-between;">
         <span class="hint" style="margin:0">共 {{ app.files.length }} 个 · 已选 {{ app.sel.length }} 个</span>

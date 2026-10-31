@@ -28,6 +28,7 @@ THUMB_CACHE_DIR = os.path.join(BASE_DIR, "_thumb_cache")
 MASK_CACHE_DIR = os.path.join(BASE_DIR, "_mask_cache")
 GRADING_CACHE_DIR = os.path.join(BASE_DIR, "_grading_cache")
 BASE_CACHE_DIR = os.path.join(BASE_DIR, "_base_cache")  # 解码后的单帧原图，调参时复用
+IMPORT_DIR = os.path.join(BASE_DIR, "_imports")  # 拖拽 / 粘贴导入的视频副本
 os.makedirs(LUTS_DIR, exist_ok=True)
 os.makedirs(RESTORE_LUTS_DIR, exist_ok=True)
 os.makedirs(LOG_STYLE_LUTS_DIR, exist_ok=True)
@@ -37,6 +38,7 @@ os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
 os.makedirs(MASK_CACHE_DIR, exist_ok=True)
 os.makedirs(GRADING_CACHE_DIR, exist_ok=True)
 os.makedirs(BASE_CACHE_DIR, exist_ok=True)
+os.makedirs(IMPORT_DIR, exist_ok=True)
 os.chdir(BASE_DIR)  # 保证 helper 中的相对路径行为一致
 
 VIDEO_EXTS = ('.mp4', '.mov', '.mkv', '.avi', '.mxf', '.webm')
@@ -139,6 +141,43 @@ def list_videos():
                 "duration": get_video_duration(full),
             })
     return jsonify({"files": files})
+
+
+@app.route('/api/import_files', methods=['POST'])
+def import_files():
+    """拖拽 / 粘贴导入：浏览器只能拿到文件内容、拿不到原始路径，因此复制一份到 _imports/ 后返回路径"""
+    uploads = request.files.getlist('files')
+    if not uploads:
+        return jsonify({"error": "没有收到文件"}), 400
+    results = []
+    for f in uploads:
+        name = os.path.basename(f.filename or '')
+        if not name.lower().endswith(VIDEO_EXTS):
+            continue
+        tmp = os.path.join(IMPORT_DIR, ".tmp-" + uuid.uuid4().hex)
+        f.save(tmp)
+        size = os.path.getsize(tmp)
+        dest = os.path.join(IMPORT_DIR, name)
+        if os.path.exists(dest) and os.path.getsize(dest) == size:
+            os.remove(tmp)  # 同名同大小视为同一文件，避免重复占用磁盘
+        elif os.path.exists(dest):
+            stem, ext = os.path.splitext(name)
+            i = 1
+            while os.path.exists(dest):
+                dest = os.path.join(IMPORT_DIR, f"{stem} ({i}){ext}")
+                i += 1
+            os.replace(tmp, dest)
+        else:
+            os.replace(tmp, dest)
+        results.append({
+            "name": os.path.basename(dest),
+            "path": dest,
+            "size": size,
+            "duration": get_video_duration(dest),
+        })
+    if not results:
+        return jsonify({"error": "仅支持 mp4 / mov / mkv / avi / mxf / webm 视频"}), 400
+    return jsonify({"files": results})
 
 
 LUT_DISPLAY_NAMES = {

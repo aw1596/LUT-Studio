@@ -8,6 +8,7 @@ _base_cache/
 _mask_cache/
 _grading_cache/
 _preview_cache/
+_imports/
 debug.log
 
 # 前端依赖

@@ -27,6 +27,7 @@ LUT Studio 把 Log 视频还原为 Rec.709，并对普通视频做 **3D LUT 批�
 - 预览缩放：滚轮以光标为中心缩放（1×–8×），放大后可拖动平移，双击复位
 - 五个面板：素材 / 滤镜 / 调色 / 导出 / 任务
 - 素材扫描：填写文件夹即可列出视频（缩略图、时长、大小），支持全选 / 清空；路径可点「选择…」调用系统文件夹对话框
+- 素材导入：把视频拖进窗口任意位置，或复制文件后在页面按 Ctrl+V 粘贴，即可加入素材列表（文件会复制到项目 `_imports/`，支持多文件与同名自动编号）
 - 胶片条：左右箭头 + 滚轮横向滚动
 - 滤镜画廊分三组：灰片还原 LUT（一级）、Log 转风格化 LUT（一级）、个性化 LUT（二级叠加）
 - 每张滤镜卡片实时渲染「当前素材套用该 LUT 后」的画面（服务端渲染并缓存）
@@ -158,7 +159,7 @@ LUT-Studio/
 └── .gitignore                 # 忽略 node_modules、__pycache__ 与各类缓存
 ```
 
-运行时会在项目根目录生成 `_thumb_cache/`、`_base_cache/`、`_mask_cache/`、`_grading_cache/`、`_preview_cache/` 五个缓存目录，均已加入 `.gitignore`，可随时删除，程序按需重建。
+运行时会在项目根目录生成 `_thumb_cache/`、`_base_cache/`、`_mask_cache/`、`_grading_cache/`、`_preview_cache/` 五个缓存目录；拖拽 / 粘贴导入的视频副本存放在 `_imports/`。以上均已加入 `.gitignore`，缓存可随时删除，程序按需重建。
 
 ### HTTP 接口
 
@@ -167,6 +168,7 @@ LUT-Studio/
 | GET | `/` | 单页界面 |
 | GET | `/api/gpu_status` | NVENC 是否可用及原因 |
 | GET | `/api/list_videos?dir=` | 列出目录内视频 |
+| POST | `/api/import_files` | 拖拽 / 粘贴导入：接收 multipart `files`，复制到 `_imports/` 并返回素材信息 |
 | GET | `/api/luts` | LUT 列表（含 `kind`: `restore` / `log` / `creative`） |
 | POST | `/api/upload_lut` | 上传 `.cube` 到 `luts/creative/` |
 | POST | `/api/preview/ensure` | 获取可播放预览地址（HEVC 走 720p 代理） |
@@ -277,6 +279,7 @@ Repository: <https://github.com/aw1596/LUT-Studio>
 - Preview zoom: wheel zooms around the cursor (1×–8×), drag to pan, double-click to reset
 - Five panels: Media / Filter / Color / Export / Tasks
 - Media scanning: point at a folder, clips are listed with thumbnail, duration and size; select all / clear; native folder picker
+- Media import: drop videos anywhere in the window, or copy files and press Ctrl+V — they are copied into `_imports/` and added to the list (multi-file, auto-numbered on name clashes)
 - Filmstrip navigation: arrow buttons plus horizontal wheel scrolling
 - Filter gallery in three groups: restoration LUTs (primary), Log-to-look LUTs (primary), creative LUTs (secondary stack)
 - Every filter card shows the actual current clip with that LUT applied (rendered and cached server-side)
@@ -406,7 +409,7 @@ LUT-Studio/
 └── .gitignore                 # Ignores node_modules, __pycache__ and caches
 ```
 
-At runtime the app creates `_thumb_cache/`, `_base_cache/`, `_mask_cache/`, `_grading_cache/` and `_preview_cache/` in the project root. They are git-ignored and safe to delete.
+At runtime the app creates `_thumb_cache/`, `_base_cache/`, `_mask_cache/`, `_grading_cache/` and `_preview_cache/` in the project root; dropped / pasted videos are copied into `_imports/`. All of them are git-ignored, and caches are safe to delete.
 
 ### HTTP API
 
@@ -415,6 +418,7 @@ At runtime the app creates `_thumb_cache/`, `_base_cache/`, `_mask_cache/`, `_gr
 | GET | `/` | Single-page UI |
 | GET | `/api/gpu_status` | Whether NVENC is usable, and why not |
 | GET | `/api/list_videos?dir=` | List videos in a folder |
+| POST | `/api/import_files` | Drag / paste import: accepts multipart `files`, copies into `_imports/` and returns clip metadata |
 | GET | `/api/luts` | LUT list with `kind`: `restore` / `log` / `creative` |
 | POST | `/api/upload_lut` | Upload a `.cube` into `luts/creative/` |
 | POST | `/api/preview/ensure` | Playable preview URL (HEVC gets a 720p proxy) |

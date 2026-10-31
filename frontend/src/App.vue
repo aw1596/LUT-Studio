@@ -72,6 +72,9 @@ const app = reactive({
   tab: 'media',
   inputDir: '',
   scanning: false,
+  importing: false,
+  importPct: 0,
+  dragOver: false,
   files: [],
   currentPath: '',
   sel: [],
@@ -615,6 +618,86 @@ app.scanDir = async () => {
   }
 }
 
+// ---------- 拖拽 / 粘贴导入 ----------
+const VIDEO_RE = /\.(mp4|mov|mkv|avi|mxf|webm)$/i
+
+const uploadFiles = (form) => new Promise((resolve, reject) => {
+  const xhr = new XMLHttpRequest()
+  xhr.open('POST', '/api/import_files')
+  xhr.upload.onprogress = (e) => {
+    if (e.lengthComputable) app.importPct = Math.round((e.loaded / e.total) * 100)
+  }
+  xhr.onload = () => {
+    let d = {}
+    try { d = JSON.parse(xhr.responseText || '{}') } catch (e) { /* 非 JSON 响应 */ }
+    if (xhr.status >= 200 && xhr.status < 300) resolve(d)
+    else reject(new Error(d.error || `HTTP ${xhr.status}`))
+  }
+  xhr.onerror = () => reject(new Error('网络错误'))
+  xhr.send(form)
+})
+
+// 浏览器只给文件内容、拿不到原始路径，所以统一复制到 _imports/ 后再加入素材列表
+app.importFiles = async (fileList, source) => {
+  if (app.importing) return
+  const files = Array.from(fileList || []).filter(f => VIDEO_RE.test(f.name))
+  if (!files.length) return ElMessage.warning('仅支持视频文件：mp4 / mov / mkv / avi / mxf / webm')
+  app.importing = true
+  app.importPct = 0
+  const form = new FormData()
+  files.forEach(f => form.append('files', f, f.name))
+  try {
+    const d = await uploadFiles(form)
+    const added = d.files || []
+    if (!added.length) return ElMessage.warning('没有可导入的视频文件')
+    let first = ''
+    added.forEach(f => {
+      if (app.files.some(x => x.path === f.path)) return
+      app.files.push(f)
+      app.sel.push(f.path)
+      if (!first) first = f.path
+    })
+    if (!app.currentPath && first) app.currentPath = first
+    ElMessage.success(`${source}导入 ${added.length} 个视频（已复制到 _imports/）`)
+    app.refreshPreview()
+    nextTick(app.updateBinNav)
+  } catch (e) {
+    ElMessage.error('导入失败：' + e.message)
+  } finally {
+    app.importing = false
+    app.importPct = 0
+  }
+}
+
+app.onWindowDragOver = (e) => {
+  if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return
+  e.preventDefault()
+  e.dataTransfer.dropEffect = 'copy'
+  app.dragOver = true
+}
+
+// 只有真正离开窗口时才收起提示，避免掠过子元素时闪烁
+app.onWindowDragLeave = (e) => {
+  if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+    app.dragOver = false
+  }
+}
+
+app.onWindowDrop = (e) => {
+  if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return
+  e.preventDefault()
+  app.dragOver = false
+  app.importFiles(e.dataTransfer.files, '拖拽')
+}
+
+app.onWindowPaste = (e) => {
+  const cd = e.clipboardData
+  const files = Array.from((cd && cd.files) || [])
+  if (!files.some(f => VIDEO_RE.test(f.name))) return
+  e.preventDefault()
+  app.importFiles(files, '粘贴')
+}
+
 app.toggleClip = (f) => {
   app.currentPath = f.path
   const i = app.sel.indexOf(f.path)
@@ -847,11 +930,19 @@ onMounted(() => {
   if (last) app.scanDir()
   window.addEventListener('resize', app.updateMaskBox)
   window.addEventListener('resize', app.updateBinNav)
+  window.addEventListener('dragover', app.onWindowDragOver)
+  window.addEventListener('dragleave', app.onWindowDragLeave)
+  window.addEventListener('drop', app.onWindowDrop)
+  window.addEventListener('paste', app.onWindowPaste)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', app.updateMaskBox)
   window.removeEventListener('resize', app.updateBinNav)
+  window.removeEventListener('dragover', app.onWindowDragOver)
+  window.removeEventListener('dragleave', app.onWindowDragLeave)
+  window.removeEventListener('drop', app.onWindowDrop)
+  window.removeEventListener('paste', app.onWindowPaste)
 })
 </script>
 
@@ -886,4 +977,15 @@ onBeforeUnmount(() => {
 
   <!-- 底部素材条 -->
   <Filmstrip />
+
+  <!-- 拖拽 / 粘贴导入提示 -->
+  <div v-if="app.dragOver || app.importing" class="drop-overlay">
+    <div class="drop-card">
+      <div class="drop-title">{{ app.importing ? '正在导入视频…' : '松开鼠标导入视频' }}</div>
+      <div class="drop-sub">
+        {{ app.importing ? app.importPct + '%' : '支持 mp4 / mov / mkv / avi / mxf / webm，可一次拖入多个文件' }}
+      </div>
+      <el-progress v-if="app.importing" :percentage="app.importPct" :stroke-width="6" :show-text="false" />
+    </div>
+  </div>
 </template>

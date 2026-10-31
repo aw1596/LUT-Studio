@@ -345,3 +345,22 @@ body {
 .panel-body .el-collapse .el-collapse .el-collapse-item__header {
   font-size: 12px; color: #c9c9d2;
 }
+
+/* 拖拽 / 粘贴导入 */
+.hint code {
+  font-size: 11px; padding: 1px 4px; border-radius: 4px;
+  background: var(--panel-2); border: 1px solid var(--line); color: #c9c9d2;
+}
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 3000; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(6, 8, 14, .55); backdrop-filter: blur(2px);
+}
+.drop-card {
+  width: 360px; padding: 22px 24px; border-radius: 14px; text-align: center;
+  background: rgba(21, 21, 27, .94); border: 1px dashed var(--accent-2);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
+}
+.drop-title { font-size: 15px; font-weight: 600; }
+.drop-sub { margin-top: 8px; font-size: 12px; color: var(--sub); line-height: 1.5; }
+.drop-card .el-progress { margin-top: 14px; }
