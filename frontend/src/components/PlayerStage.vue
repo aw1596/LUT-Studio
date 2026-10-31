@@ -8,7 +8,7 @@ const app = inject('app')
 <template>
   <section class="stage">
     <div class="player" :ref="el => (app.playerEl = el)" :class="{ zoomed: app.zoom.scale > 1.001 }"
-         @wheel="app.onZoomWheel">
+         @wheel="app.onZoomWheel" @dragstart.prevent>
       <div class="player-tag" v-if="app.currentClip">
         <span class="name">{{ app.currentClip.name }}</span>
         <span v-if="app.previewingLut" style="color:var(--accent-2)">LUT 预览</span>
@@ -18,7 +18,7 @@ const app = inject('app')
            :class="{ on: app.compare }"
            @mouseenter="app.compare = true" @mouseleave="app.compare = false">按住对比原片</div>
 
-      <video v-if="app.playUrl" :ref="el => (app.mediaEl = el)" :src="app.playUrl" autoplay
+      <video v-if="app.playUrl" :ref="el => (app.mediaEl = el)" :src="app.playUrl" autoplay draggable="false"
              :style="app.zoomStyle"
              @loadedmetadata="app.onMediaMeta" @timeupdate="app.onTimeUpdate"
              @play="app.playing = true" @pause="app.playing = false"
@@ -26,7 +26,7 @@ const app = inject('app')
              @dblclick="app.resetZoom"
              @pointerdown="app.zoomPanStart" @pointermove="app.zoomPanMove"
              @pointerup="app.zoomPanEnd" @pointercancel="app.zoomPanEnd"></video>
-      <img v-else-if="app.mainThumbUrl" :ref="el => (app.mediaEl = el)" :src="app.mainThumbUrl"
+      <img v-else-if="app.mainThumbUrl" :ref="el => (app.mediaEl = el)" :src="app.mainThumbUrl" draggable="false"
            :style="app.zoomStyle"
            @load="app.onThumbLoad" @error="app.onThumbError"
            @dblclick="app.resetZoom"

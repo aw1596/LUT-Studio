@@ -322,6 +322,7 @@ app.onZoomWheel = (ev) => {
 
 app.zoomPanStart = (ev) => {
   if (ev.button !== 0 || app.zoom.scale <= 1.001 || app.maskEditing) return
+  ev.preventDefault()  // 阻止浏览器把画面当作图片拖拽，否则会打断平移并触发导入提示
   app.zoomDragging = true
   app.zoomStart = { x: ev.clientX, y: ev.clientY, tx: app.zoom.x, ty: app.zoom.y }
   try { ev.currentTarget.setPointerCapture(ev.pointerId) } catch (e) { /* 合成事件可能没有真实 pointerId */ }
@@ -670,6 +671,7 @@ app.importFiles = async (fileList, source) => {
 }
 
 app.onWindowDragOver = (e) => {
+  if (app.zoomDragging) return  // 正在拖动平移画面，不当作文件导入
   if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return
   e.preventDefault()
   e.dataTransfer.dropEffect = 'copy'
@@ -684,6 +686,7 @@ app.onWindowDragLeave = (e) => {
 }
 
 app.onWindowDrop = (e) => {
+  if (app.zoomDragging) return
   if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return
   e.preventDefault()
   app.dragOver = false
