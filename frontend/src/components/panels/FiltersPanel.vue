@@ -25,6 +25,18 @@ const app = inject('app')
     <el-slider v-model="app.lutStrength" :min="0" :max="100" :step="5" :disabled="!app.lutPath"></el-slider>
     <div class="hint">把 D-Log-M / Apple Log 等灰片还原成 Rec.709，缩略图为 100% 强度效果。</div>
 
+    <!-- 一级：Log 直转风格化 -->
+    <div class="group-title">Log 转 风格化（一级）</div>
+    <div class="filters">
+      <div class="filter-card" v-for="l in app.logStyleLuts" :key="l.path"
+           :class="{ active: app.lutPath === l.path }" @click="app.lutPath = l.path">
+        <img v-if="app.currentClip" class="thumb" :src="app.thumbUrl({ lut: l.path, w: 200, strength: 100, noSecond: true })" loading="lazy">
+        <div v-else class="ph"></div>
+        <div class="label">{{ l.name }}</div>
+      </div>
+    </div>
+    <div class="hint">以 Log 素材为输入，一次完成还原 + 风格化（输出 Rec.709）；选中后无需再叠加还原 LUT。放入 luts/log_style/ 的新 LUT 刷新即显示。</div>
+
     <!-- 二级：个性化风格 -->
     <div class="group-title">二级调色 · 个性化 LUT</div>
     <div class="filters">

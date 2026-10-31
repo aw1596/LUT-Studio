@@ -21,7 +21,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(BASE_DIR, "web")
 LUTS_DIR = os.path.join(BASE_DIR, "luts")
 RESTORE_LUTS_DIR = os.path.join(LUTS_DIR, "restore")  # 官方灰片还原 LUT，放进来即自动显示
-CREATIVE_LUTS_DIR = os.path.join(LUTS_DIR, "creative")  # 个性化 / 风格 LUT
+LOG_STYLE_LUTS_DIR = os.path.join(LUTS_DIR, "log_style")  # Log 直转风格化 LUT（输入为 Log，输出 Rec.709 + 风格）
+CREATIVE_LUTS_DIR = os.path.join(LUTS_DIR, "creative")  # 个性化 / 风格 LUT（输入为 Rec.709）
 PREVIEW_CACHE_DIR = os.path.join(BASE_DIR, "_preview_cache")
 THUMB_CACHE_DIR = os.path.join(BASE_DIR, "_thumb_cache")
 MASK_CACHE_DIR = os.path.join(BASE_DIR, "_mask_cache")
@@ -174,6 +175,7 @@ def _scan_lut_dir(directory, kind):
 def list_luts():
     # restore 目录优先；luts/ 根目录保留兼容旧文件，一并按个性化处理
     luts = (_scan_lut_dir(RESTORE_LUTS_DIR, 'restore')
+            + _scan_lut_dir(LOG_STYLE_LUTS_DIR, 'log')
             + _scan_lut_dir(CREATIVE_LUTS_DIR, 'creative')
             + _scan_lut_dir(LUTS_DIR, 'creative'))
     return jsonify({"luts": luts})

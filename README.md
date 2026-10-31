@@ -30,6 +30,7 @@ LUT Studio 用于把 Log 视频还原为 Rec.709，并对普通视频做 **3D LU
 - 胶片条：左右箭头 + 滚轮横向滚动
 - 滤镜画廊：每张卡片实时渲染「当前素材套用该 LUT 后」的画面（服务端渲染并缓存）
 - 滤镜强度 0–100%，支持二级 LUT 叠加（两级强度独立）
+- **Log 转 风格化**：`luts/log_style/` 中以 `for LOG` / `Log -` 命名的 LUT 单独成组，直接以 Log 素材为输入，一次完成还原 + 风格化
 - **一级调色**：色温、色调、曝光、对比度、高光、阴影、白色、黑色、饱和度、自然饱和度、锐化
 - **色轮**：暗部 / 中间调 / 高光三段染色，双击归零
 - **色调曲线**：RGB 主通道 + R / G / B 四通道，Catmull-Rom 平滑；另有暗部 / 中间调 / 高光区域调整
@@ -103,11 +104,12 @@ npm run build       # 打包到 ../web，之后刷新 http://127.0.0.1:5000
 
 ### LUT 管理
 
-- 灰片还原 LUT：把 `.cube` 拷进 `luts/restore/`。仓库已带 `DJI_DLogM_to_Rec709.cube`、`AppleLogToRec709-v1.0.cube`、`Apple Log To Rec709 Fix.cube`、`（iPhone 17 Pro）还原Lut_applelog2.cube`。刷新页面即出现在「灰片还原 LUT（一级）」区，无需改代码或重启
-- 个性化 LUT：把 `.cube` 拷进 `luts/creative/`，或在「滤镜」面板上传（上传文件也保存到该目录）。仓库已带 DJI Pocket 3 四季 Pro、Analogica Lab Kodak 2383（D55 / D60 / D65，LOG 与 Rec709 两版）、Pixflow CL Kodak（Portra / Ektachrome / VISION3 等，LOG 与 Rec709 两版）、赐福司影调 01–02、青青风格化 1–3
+- 灰片还原 LUT：把 `.cube` 拷进 `luts/restore/`。仓库已带 `DJI_DLogM_to_Rec709.cube`、`AppleLogToRec709-v1.0.cube`、`Apple Log To Rec709 Fix.cube`、`Apple Log2 To Rec709.cube`。刷新页面即出现在「灰片还原 LUT（一级）」区，无需改代码或重启
+- Log 转 风格化 LUT：把 LUT 拷进 `luts/log_style/`。仓库已带 Analogica Lab Kodak 2383 的 LOG 版（D55 / D60 / D65）与 Pixflow CL Kodak 的 Log 版（Portra / Ektachrome / VISION3 等），在「Log 转 风格化（一级）」区显示
+- 个性化 LUT：把 `.cube` 拷进 `luts/creative/`，或在「滤镜」面板上传（上传文件也保存到该目录）。仓库已带 DJI Pocket 3 四季 Pro、Kodak 2383 的 Rec709 版、Pixflow Kodak 的 Standard Rec.709 版、赐福司影调 01–02、青青风格化 1–3
 - 页面按文件名展示；`DJI OSMO Pocket 3 xxx.cube` 会显示为 `xxx（Pocket 3 调色）`
 - 个性化卡片缩略图显示「当前还原 LUT + 该风格 LUT」的组合效果
-- 文件名带 `LOG` 的 LUT 以 Log 素材为输入；带 `Rec709` 的以 Rec.709 素材为输入。已套用还原 LUT 后再叠加风格 LUT 时请选 Rec709 版本，避免重复还原
+- 带 `LOG` 的 LUT 以 Log 素材为输入（统一放在 `luts/log_style/`）；带 `Rec709` 的以 Rec.709 素材为输入。套用 Log 风格化 LUT 后无需再加还原 LUT；已还原的画面叠加风格 LUT 时请选 Rec709 版本
 
 ### 项目结构
 
@@ -129,7 +131,8 @@ LUT-Studio/
 │   └── assets/
 ├── luts/
 │   ├── restore/               # 灰片还原 LUT（D-Log-M / Apple Log 等）
-│   └── creative/              # 个性化风格 LUT（页面后台上传也放这里）
+│   ├── log_style/             # Log 直转风格化 LUT（输入 Log，输出 Rec.709 + 风格）
+│   └── creative/              # 个性化风格 LUT（输入 Rec.709，页面后台上传也放这里）
 └── .gitignore                 # 忽略 node_modules、__pycache__ 与各类缓存
 ```
 
@@ -253,6 +256,7 @@ Repository: <https://github.com/aw1596/LUT-Studio>
 - Filmstrip navigation: arrow buttons plus horizontal wheel scrolling
 - Filter gallery: every card shows the actual current clip with that LUT applied (rendered and cached server-side)
 - Filter strength 0–100% plus a secondary chained LUT with its own strength
+- **Log to look**: LUTs named `for LOG` / `Log -` live in `luts/log_style/` and get their own group; they take Log input and output Rec.709 + the look in one step
 - **Primary grading**: temperature, tint, exposure, contrast, highlights, shadows, whites, blacks, saturation, vibrance, sharpness
 - **Color wheels**: shadows / midtones / highlights, double-click to reset
 - **Tone curves**: master + R / G / B channels, Catmull-Rom smoothing, plus shadows / midtones / highlights region sliders
@@ -324,11 +328,12 @@ npm run build       # bundles into ../web
 
 ### Managing LUTs
 
-- Restoration LUTs: copy `.cube` files into `luts/restore/`. The repo bundles `DJI_DLogM_to_Rec709.cube`, `AppleLogToRec709-v1.0.cube`, `Apple Log To Rec709 Fix.cube` and `（iPhone 17 Pro）还原Lut_applelog2.cube`. Refresh the page and they appear, no restart needed
-- Creative LUTs: copy files into `luts/creative/`, or upload them from the Filter panel. Bundled sets include DJI Pocket 3 seasonal Pro LUTs, Analogica Lab Kodak 2383 (D55 / D60 / D65, LOG and Rec709 versions), Pixflow CL Kodak (Portra / Ektachrome / VISION3 etc., LOG and Rec709 versions), 赐福司影调 01–02 and 青青风格化 1–3
+- Restoration LUTs: copy `.cube` files into `luts/restore/`. The repo bundles `DJI_DLogM_to_Rec709.cube`, `AppleLogToRec709-v1.0.cube`, `Apple Log To Rec709 Fix.cube` and `Apple Log2 To Rec709.cube`. Refresh the page and they appear, no restart needed
+- Log-to-look LUTs: copy files into `luts/log_style/`. The repo bundles the LOG versions of Analogica Lab Kodak 2383 (D55 / D60 / D65) and Pixflow CL Kodak (Portra / Ektachrome / VISION3 etc.); they show up in the "Log to look (primary)" group
+- Creative LUTs: copy files into `luts/creative/`, or upload them from the Filter panel. Bundled sets include DJI Pocket 3 seasonal Pro LUTs, Kodak 2383 Rec709 versions, Pixflow Kodak Standard Rec.709 versions, 赐福司影调 01–02 and 青青风格化 1–3
 - Cards are labelled from filenames; `DJI OSMO Pocket 3 xxx.cube` shows as `xxx (Pocket 3 look)`
 - Creative thumbnails preview "current restoration LUT + that look LUT"
-- LUTs named `LOG` expect Log input; those named `Rec709` expect Rec.709 input. After applying a restoration LUT, pick the `Rec709` version to avoid double restoration
+- LUTs named `LOG` expect Log input (all kept in `luts/log_style/`); those named `Rec709` expect Rec.709 input. A Log-to-look LUT needs no separate restoration LUT; when stacking a look on already-restored footage, pick the `Rec709` version
 
 ### Project structure
 
@@ -350,7 +355,8 @@ LUT-Studio/
 │   └── assets/
 ├── luts/
 │   ├── restore/               # Log-restoration LUTs (D-Log-M / Apple Log)
-│   └── creative/              # Creative look LUTs (UI uploads land here too)
+│   ├── log_style/             # Log-to-look LUTs (Log input → Rec.709 + look)
+│   └── creative/              # Creative look LUTs (Rec.709 input; UI uploads land here too)
 └── .gitignore                 # Ignores node_modules, __pycache__ and caches
 ```
 

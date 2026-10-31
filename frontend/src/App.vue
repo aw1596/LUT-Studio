@@ -202,8 +202,9 @@ app.maskGeo = computed(() => {
     x2b: cx + px * L + dx * off, y2b: cy + py * L + dy * off,
   }
 })
-// LUT 分两类：内置的灰片还原 LUT（一级）与 luts/ 里的个性化 LUT（二级叠加）
+// LUT 分三类：内置的灰片还原 LUT（一级）、Log 直转风格化 LUT（一级）与 luts/ 里的个性化 LUT（二级叠加）
 app.restoreLuts = computed(() => app.luts.filter(l => l.kind === 'restore'))
+app.logStyleLuts = computed(() => app.luts.filter(l => l.kind === 'log'))
 app.creativeLuts = computed(() => app.luts.filter(l => l.kind === 'creative'))
 app.lutLabel = computed(() => {
   const l = app.luts.find(x => x.path === app.lutPath)
