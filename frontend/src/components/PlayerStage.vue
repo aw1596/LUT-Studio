@@ -1,6 +1,7 @@
 <script setup>
 import { inject } from 'vue'
 import MaskCanvas from './MaskCanvas.vue'
+import MaskGuides from './MaskGuides.vue'
 
 const app = inject('app')
 </script>
@@ -37,38 +38,8 @@ const app = inject('app')
         在右侧「素材」中填写路径并扫描，素材会出现在底部素材条
       </div>
 
-      <!-- 蒙版引导层：与画面区域严格对齐 -->
-      <svg v-if="app.maskEditing && !app.isDrawnMask && (app.playUrl || app.mainThumbUrl)" class="mask-svg"
-           :style="app.maskStyle" viewBox="0 0 100 100" preserveAspectRatio="none"
-           @pointerdown="app.maskDown" @pointermove="app.maskMove"
-           @pointerup="app.maskUp" @pointercancel="app.maskUp">
-        <template v-if="app.maskGeo.type === 'radial'">
-          <ellipse :cx="app.maskGeo.cx" :cy="app.maskGeo.cy" :rx="app.maskGeo.rx" :ry="app.maskGeo.ry"
-                   fill="rgba(61,126,255,.10)" stroke="rgba(255,255,255,.85)"
-                   stroke-width="1.2" vector-effect="non-scaling-stroke"></ellipse>
-          <ellipse :cx="app.maskGeo.cx" :cy="app.maskGeo.cy" :rx="app.maskGeo.rx * app.maskGeo.fade" :ry="app.maskGeo.ry * app.maskGeo.fade"
-                   fill="none" stroke="rgba(255,255,255,.35)" stroke-dasharray="4 3"
-                   stroke-width="1" vector-effect="non-scaling-stroke"></ellipse>
-        </template>
-        <template v-else-if="app.maskGeo.type === 'rect'">
-          <rect :x="app.maskGeo.x" :y="app.maskGeo.y" :width="app.maskGeo.w" :height="app.maskGeo.h"
-                fill="rgba(61,126,255,.10)" stroke="rgba(255,255,255,.85)"
-                stroke-width="1.2" vector-effect="non-scaling-stroke"></rect>
-        </template>
-        <template v-else>
-          <line :x1="app.maskGeo.x1" :y1="app.maskGeo.y1" :x2="app.maskGeo.x2" :y2="app.maskGeo.y2"
-                stroke="rgba(255,255,255,.85)" stroke-width="1.2" vector-effect="non-scaling-stroke"></line>
-          <line :x1="app.maskGeo.x1b" :y1="app.maskGeo.y1b" :x2="app.maskGeo.x2b" :y2="app.maskGeo.y2b"
-                stroke="rgba(255,255,255,.3)" stroke-dasharray="4 3"
-                stroke-width="1" vector-effect="non-scaling-stroke"></line>
-        </template>
-        <circle :cx="app.maskGeo.cx" :cy="app.maskGeo.cy" r="3"
-                fill="none" stroke="#fff" stroke-width="1.4" vector-effect="non-scaling-stroke"></circle>
-        <line :x1="app.maskGeo.cx - 5" :y1="app.maskGeo.cy" :x2="app.maskGeo.cx + 5" :y2="app.maskGeo.cy"
-              stroke="#fff" stroke-width="1" vector-effect="non-scaling-stroke"></line>
-        <line :x1="app.maskGeo.cx" :y1="app.maskGeo.cy - 5" :x2="app.maskGeo.cx" :y2="app.maskGeo.cy + 5"
-              stroke="#fff" stroke-width="1" vector-effect="non-scaling-stroke"></line>
-      </svg>
+      <!-- 几何蒙版引导层：可拖拽边缘缩放、圆形箭头旋转、内侧虚线调羽化 -->
+      <MaskGuides v-if="app.maskEditing && !app.isDrawnMask && (app.playUrl || app.mainThumbUrl)" />
 
       <!-- 画笔 / 钢笔蒙版：canvas 叠加层 -->
       <MaskCanvas v-if="app.maskEditing && app.isDrawnMask && (app.playUrl || app.mainThumbUrl)" />

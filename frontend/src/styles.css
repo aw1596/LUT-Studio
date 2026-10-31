@@ -274,13 +274,7 @@ body {
 .seg button:hover { color: var(--text); border-color: #3a3a48; }
 .seg button.on { border-color: var(--accent); color: #fff; background: #24304a; }
 
-/* 蒙版叠加层：与画面严格对齐，拖动设置蒙版中心 */
-.mask-svg {
-  position: absolute; z-index: 4; touch-action: none; cursor: crosshair;
-  overflow: visible;
-}
-
-/* 画笔 / 钢笔蒙版 canvas 层 */
+/* 蒙版叠加层（画笔 / 钢笔 / 几何引导）：与画面严格对齐 */
 .mask-canvas {
   position: absolute; z-index: 4; touch-action: none; cursor: crosshair;
 }

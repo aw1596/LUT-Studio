@@ -15,6 +15,7 @@ import TasksPanel from './components/panels/TasksPanel.vue'
 // ---------- 调色 / 蒙版的数据工厂 ----------
 // 同一套调色参数既用于全局一级调色，也用于每个蒙版的独立调色
 let maskSeq = 0
+let nodeSeq = 0
 
 const blankCurve = () => [{ x: 0, y: 0 }, { x: 1, y: 1 }]
 const blankHsl = () => ({
@@ -45,25 +46,46 @@ function makeGrading() {
   }
 }
 
+const SHAPE_LABELS = { linear: '线性', radial: '圆形', rect: '矩形', brush: '画笔', pen: '钢笔' }
+
+// 组合树中的原始选区节点：一次工具操作的产物
+function makeNode(shape = 'radial', op = 'add') {
+  nodeSeq += 1
+  return {
+    id: 'n' + nodeSeq,
+    name: `${SHAPE_LABELS[shape] || '选区'} ${nodeSeq}`,
+    op, enabled: true, shape,
+    cx: 0.5, cy: 0.5, angle: 0,
+    size: 0.35, aspect: 0.6, feather: 0.25, invert: false,
+    brush_size: 0.12, strokes: [], pen_points: [],
+  }
+}
+
+// 蒙版 = 组合树（nodes + 运算）+ 一组作用于最终合成选区的调色参数
 function makeMask(shape = 'radial') {
   maskSeq += 1
+  const node = makeNode(shape)
   return {
     id: 'm' + maskSeq,
     name: `蒙版 ${maskSeq}`,
     enabled: true,
-    shape,
-    cx: 0.5, cy: 0.5, angle: 0,
-    size: 0.35, aspect: 0.6, feather: 0.25, invert: false,
-    brush_size: 0.12, strokes: [], pen_points: [],
+    nodes: [node],
+    activeNodeId: node.id,
+    invert: false,
     grading: makeGrading(),
   }
 }
 
-// 未选中任何蒙版时的占位对象，保证模板里的 app.mask 始终可读
+// 未选中任何蒙版时的占位对象，保证模板里的 app.mask / app.activeNode 始终可读
 const idleMask = {
-  id: 'idle', name: '未选择蒙版', enabled: false, shape: 'radial',
-  cx: 0.5, cy: 0.5, angle: 0, size: 0.35, aspect: 0.6, feather: 0.25,
-  invert: false, brush_size: 0.12, strokes: [], pen_points: [],
+  id: 'idle', name: '未选择蒙版', enabled: false,
+  nodes: [{
+    id: 'idle-node', name: '未选择选区', op: 'add', enabled: false, shape: 'radial',
+    cx: 0.5, cy: 0.5, angle: 0, size: 0.35, aspect: 0.6, feather: 0.25,
+    invert: false, brush_size: 0.12, strokes: [], pen_points: [],
+  }],
+  activeNodeId: 'idle-node',
+  invert: false,
   grading: makeGrading(),
 }
 
@@ -159,7 +181,14 @@ app.maskEditing = computed(() =>
   !!(app.maskDraft || app.masks.some(m => m.id === app.maskId)))
 app.mask = computed(() =>
   app.maskDraft || app.masks.find(m => m.id === app.maskId) || idleMask)
-app.isDrawnMask = computed(() => app.mask.shape === 'brush' || app.mask.shape === 'pen')
+// 当前编辑的原始选区节点（组合树叶子）；所有形状 / 绘制操作都作用于它
+app.activeNode = computed(() => {
+  const m = app.mask
+  const nodes = m.nodes || []
+  return nodes.find(n => n.id === m.activeNodeId) || nodes[0] || idleMask.nodes[0]
+})
+app.isDrawnMask = computed(() =>
+  app.activeNode.shape === 'brush' || app.activeNode.shape === 'pen')
 app.hasAdjust = computed(() =>
   app.hasGrading || app.masks.some(m => m.enabled && gradingUsed(m.grading)))
 app.maskStyle = computed(() => {
@@ -175,36 +204,6 @@ app.zoomStyle = computed(() => ({
   transform: `translate(${app.zoom.x}px, ${app.zoom.y}px) scale(${app.zoom.scale})`,
   cursor: app.zoom.scale > 1.001 ? (app.zoomDragging ? 'grabbing' : 'grab') : 'default',
 }))
-// 蒙版引导图形：坐标统一为画面百分比（x 轴单位 = 宽，y 轴单位 = 高）
-app.maskGeo = computed(() => {
-  const m = app.mask
-  const ar = app.mediaAspect || 16 / 9
-  const cx = m.cx * 100, cy = m.cy * 100
-  if (app.isDrawnMask) return { type: 'drawn', cx, cy }
-  if (m.shape === 'radial') {
-    const size = Math.max(0.02, m.size)
-    return {
-      type: 'radial', cx, cy,
-      rx: size * 100, ry: size * 100 * ar,
-      fade: Math.max(0.02, Math.min(0.97, (size - m.feather) / size)),
-    }
-  }
-  if (m.shape === 'rect') {
-    const hw = Math.max(0.02, m.size) * 100
-    const hh = Math.max(0.02, m.size) * m.aspect * ar * 100
-    return { type: 'rect', cx, cy, x: cx - hw, y: cy - hh, w: hw * 2, h: hh * 2 }
-  }
-  const a = (m.angle || 0) * Math.PI / 180
-  const dx = Math.cos(a), dy = Math.sin(a)
-  const px = -Math.sin(a), py = Math.cos(a)
-  const L = 140, off = Math.max(0.02, m.size) / 2
-  return {
-    type: 'linear', cx, cy,
-    x1: cx - px * L, y1: cy - py * L, x2: cx + px * L, y2: cy + py * L,
-    x1b: cx - px * L + dx * off, y1b: cy - py * L + dy * off,
-    x2b: cx + px * L + dx * off, y2b: cy + py * L + dy * off,
-  }
-})
 // LUT 分三类：内置的灰片还原 LUT（一级）、Log 直转风格化 LUT（一级）与 luts/ 里的个性化 LUT（二级叠加）
 app.restoreLuts = computed(() => app.luts.filter(l => l.kind === 'restore'))
 app.logStyleLuts = computed(() => app.luts.filter(l => l.kind === 'log'))
@@ -358,21 +357,61 @@ app.masksParam = () => {
   const q = (v) => Math.round(v * 10000) / 10000
   const point = (p) => ({ x: q(p.x), y: q(p.y) })
   return JSON.stringify(app.allMasks().map(m => ({
-    name: m.name, enabled: m.enabled, shape: m.shape,
-    cx: q(m.cx), cy: q(m.cy), angle: q(m.angle), size: q(m.size),
-    aspect: q(m.aspect), feather: q(m.feather), invert: m.invert,
-    brush_size: q(m.brush_size),
-    strokes: m.strokes.map(s => s.map(point)),
-    pen_points: m.pen_points.map(point),
+    name: m.name, enabled: m.enabled, invert: !!m.invert,
+    nodes: (m.nodes || []).map(n => ({
+      name: n.name, op: n.op, enabled: n.enabled, shape: n.shape,
+      cx: q(n.cx), cy: q(n.cy), angle: q(n.angle), size: q(n.size),
+      aspect: q(n.aspect), feather: q(n.feather), invert: n.invert,
+      brush_size: q(n.brush_size),
+      strokes: (n.strokes || []).map(s => s.map(point)),
+      pen_points: (n.pen_points || []).map(point),
+    })),
     grading: m.grading,
   })))
 }
 
-// 新建蒙版（草稿）：若已有未确认的草稿，则直接切换形状
+// 新建蒙版：未在编辑时创建草稿；已在编辑时把该形状作为新选区节点加入当前蒙版
 app.newMask = (shape) => {
-  if (app.maskDraft) { app.resetMaskGeo(shape); return }
+  if (app.maskEditing) { app.addNode(shape); return }
   app.maskId = ''
   app.maskDraft = makeMask(shape)
+}
+
+// 显式新建：始终创建一张新蒙版（默认圆形选区）
+app.createMask = () => {
+  app.maskId = ''
+  app.maskDraft = makeMask('radial')
+}
+
+// 向当前蒙版追加选区节点，并切换为它的编辑状态
+app.addNode = (shape = 'radial', op = 'add') => {
+  const m = app.mask
+  if (!m || !m.nodes) return
+  if (m.nodes.length >= 12) return
+  const node = makeNode(shape, op)
+  m.nodes.push(node)
+  m.activeNodeId = node.id
+}
+
+app.selectNode = (node) => {
+  if (!node || !app.mask.nodes) return
+  app.mask.activeNodeId = node.id
+}
+
+// 删除节点；仅剩一个节点时改为重置几何，保证蒙版始终可用
+app.removeNode = (node) => {
+  const m = app.mask
+  if (!m || !m.nodes || !node) return
+  const i = m.nodes.findIndex(n => n.id === node.id)
+  if (i < 0) return
+  if (m.nodes.length <= 1) {
+    app.resetNodeGeo(node)
+    return
+  }
+  m.nodes.splice(i, 1)
+  if (m.activeNodeId === node.id) {
+    m.activeNodeId = m.nodes[Math.min(i, m.nodes.length - 1)].id
+  }
 }
 
 // 选中已确认的蒙版继续编辑；再次点击取消选中
@@ -398,15 +437,21 @@ app.deleteMask = (m) => {
   if (app.maskId === m.id) app.maskId = ''
 }
 
-// 只重置形状参数，保留该蒙版已有的独立调色
-app.resetMaskGeo = (shape) => {
-  const m = app.mask
-  Object.assign(m, {
-    shape: shape || m.shape, cx: 0.5, cy: 0.5, angle: 0,
+// 只重置当前节点的几何，保留组合结构与蒙版调色参数
+app.resetNodeGeo = (node) => {
+  const n = node || app.activeNode
+  Object.assign(n, {
+    shape: n.shape, cx: 0.5, cy: 0.5, angle: 0,
     size: 0.35, aspect: 0.6, feather: 0.25, invert: false,
   })
-  m.strokes = []
-  m.pen_points = []
+  n.strokes = []
+  n.pen_points = []
+}
+
+app.resetMaskGeo = (shape) => {
+  const n = app.activeNode
+  if (shape) n.shape = shape
+  app.resetNodeGeo(n)
 }
 
 app.resetMask = () => app.resetMaskGeo()
@@ -416,7 +461,7 @@ const PEN_HIT = 0.02
 const penHitIndex = (x, y) => {
   let best = -1
   let bestD = PEN_HIT
-  app.mask.pen_points.forEach((p, i) => {
+  app.activeNode.pen_points.forEach((p, i) => {
     const d = Math.hypot(p.x - x, p.y - y)
     if (d < bestD) { bestD = d; best = i }
   })
@@ -424,28 +469,30 @@ const penHitIndex = (x, y) => {
 }
 
 app.maskPaintStart = (x, y) => {
-  if (app.mask.shape === 'brush') {
-    app.mask.strokes.push([{ x, y }])
+  const n = app.activeNode
+  if (n.shape === 'brush') {
+    n.strokes.push([{ x, y }])
     app.maskDragging = true
-  } else if (app.mask.shape === 'pen') {
+  } else if (n.shape === 'pen') {
     const hit = penHitIndex(x, y)
     if (hit >= 0) {
       app.penDragIndex = hit
     } else {
-      app.mask.pen_points.push({ x, y })
-      app.penDragIndex = app.mask.pen_points.length - 1
+      n.pen_points.push({ x, y })
+      app.penDragIndex = n.pen_points.length - 1
     }
   }
 }
 
 app.maskPaintMove = (x, y) => {
-  if (app.mask.shape === 'pen' && app.penDragIndex >= 0) {
-    const p = app.mask.pen_points[app.penDragIndex]
+  const n = app.activeNode
+  if (n.shape === 'pen' && app.penDragIndex >= 0) {
+    const p = n.pen_points[app.penDragIndex]
     if (p) { p.x = x; p.y = y }
     return
   }
-  if (!app.maskDragging || app.mask.shape !== 'brush') return
-  const stroke = app.mask.strokes[app.mask.strokes.length - 1]
+  if (!app.maskDragging || n.shape !== 'brush') return
+  const stroke = n.strokes[n.strokes.length - 1]
   if (!stroke) return
   const last = stroke[stroke.length - 1]
   if (last && Math.hypot(last.x - x, last.y - y) < 0.003) return
@@ -458,11 +505,11 @@ app.maskPaintEnd = () => {
 }
 
 app.clearMaskPath = () => {
-  app.mask.strokes = []
-  app.mask.pen_points = []
+  app.activeNode.strokes = []
+  app.activeNode.pen_points = []
 }
 
-app.penUndo = () => { app.mask.pen_points.pop() }
+app.penUndo = () => { app.activeNode.pen_points.pop() }
 
 // 蒙版引导层与画面实际显示区域对齐
 app.updateMaskBox = () => {
@@ -475,24 +522,6 @@ app.updateMaskBox = () => {
     width: r.width, height: r.height,
   }
 }
-
-app.maskPoint = (ev) => {
-  const svg = app.playerEl && app.playerEl.querySelector('.mask-svg')
-  if (!svg) return
-  const r = svg.getBoundingClientRect()
-  if (!r.width || !r.height) return
-  app.mask.cx = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width))
-  app.mask.cy = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height))
-}
-
-app.maskDown = (ev) => {
-  app.maskDragging = true
-  app.maskPoint(ev)
-  if (ev.currentTarget.setPointerCapture) ev.currentTarget.setPointerCapture(ev.pointerId)
-}
-
-app.maskMove = (ev) => { if (app.maskDragging) app.maskPoint(ev) }
-app.maskUp = () => { app.maskDragging = false }
 
 // ---------- 预览 ----------
 app.onThumbLoad = (ev) => {
@@ -726,7 +755,18 @@ app.loadGpuStatus = async () => {
     app.gpuChecked = true
     if (!app.gpuOk) app.useGpu = false
   } catch (e) { app.gpuChecked = true; app.useGpu = false }
-  if (!app.gpuOk) ElMessage.warning('GPU 编码不可用，已切换到 CPU 模式')
+  if (!app.gpuOk) ElMessage.warning('未检测到可用的 GPU，已切换为 CPU 渲染（功能完整，速度较慢）')
+}
+
+// 主界面的渲染方式：GPU 走显卡解码/编码，CPU 兼容没有显卡的设备
+app.setRenderGpu = (gpu) => {
+  if (gpu && !app.gpuOk) {
+    ElMessage.warning('当前设备没有可用的 NVIDIA GPU，继续使用 CPU 渲染')
+    return
+  }
+  if (app.useGpu === gpu) return
+  app.useGpu = gpu
+  app.stopPlay()  // 旧的预览片段是用另一种方式生成的，切换后重新生成
 }
 
 // 点击个性化 LUT 卡片：作为二级叠加应用
@@ -759,6 +799,7 @@ app.playGraded = async () => {
         lut_strength2: app.lutStrength2,
         grading: app.grading,
         masks: app.allMasks(),
+        render_gpu: app.useGpu,
       }),
     })
     const d = await r.json()

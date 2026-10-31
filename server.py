@@ -71,10 +71,12 @@ atexit.register(_cleanup_procs)
 # 启动时检测 NVENC 是否可用（驱动过旧会失败）
 NVENC_OK = False
 NVENC_MSG = ""
+PREVIEW_GPU_OK = False  # 预览走 GPU 解码 + NVENC；运行失败时回退 CPU 并置 False
+PREVIEW_HW_OK = None  # 预览能否用 NVDEC 硬解；None=未验证，失败后置 False 不再尝试
 
 
 def check_nvenc():
-    global NVENC_OK, NVENC_MSG
+    global NVENC_OK, NVENC_MSG, PREVIEW_GPU_OK
     try:
         r = subprocess.run(
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
@@ -88,6 +90,7 @@ def check_nvenc():
             NVENC_OK, NVENC_MSG = False, (lines[0] if lines else "NVENC 初始化失败")
     except Exception as e:
         NVENC_OK, NVENC_MSG = False, str(e)
+    PREVIEW_GPU_OK = NVENC_OK
 
 
 @app.route('/')
@@ -334,6 +337,11 @@ def probe_video(path):
 
 def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
+
+
+def _pixel_rate(info):
+    """素材的像素吞吐（宽 × 高 × 帧率），用于判断是否值得走硬件解码"""
+    return (info.get("width") or 0) * (info.get("height") or 0) * (info.get("fps") or 0)
 
 
 def _parse_curve_regions(raw):
@@ -772,18 +780,21 @@ def _parse_points(raw, limit=2000):
     return pts
 
 
-def parse_mask(data):
-    raw = data.get("mask") or {}
-    if isinstance(raw, str):
-        try:
-            raw = json.loads(raw)
-        except ValueError:
-            raw = {}
+SHAPES = ("linear", "radial", "rect", "brush", "pen")
+OPS = ("add", "subtract", "intersect")
+CROP_AREA_LIMIT = 0.55  # 蒙版包围盒占画面比例低于此值时，只在该区域做局部调色
+
+
+def parse_node(raw, index=0):
+    """解析组合树中的一个原始选区节点"""
     if not isinstance(raw, dict):
         raw = {}
     shape = raw.get("shape")
-    if shape not in ("linear", "radial", "rect", "brush", "pen"):
+    if shape not in SHAPES:
         shape = "radial"
+    op = raw.get("op")
+    if op not in OPS:
+        op = "add"
     strokes = []
     raw_strokes = raw.get("strokes")
     if isinstance(raw_strokes, list):
@@ -792,7 +803,10 @@ def parse_mask(data):
             if pts:
                 strokes.append(pts)
     return {
-        "enabled": bool(raw.get("enabled")),
+        "id": str(raw.get("id") or "n%d" % (index + 1))[:24],
+        "name": str(raw.get("name") or "选区 %d" % (index + 1))[:40],
+        "op": op,
+        "enabled": raw.get("enabled", True) is not False,
         "shape": shape,
         "cx": _clamp(float(raw.get("cx", 0.5) or 0), 0, 1),
         "cy": _clamp(float(raw.get("cy", 0.5) or 0), 0, 1),
@@ -807,25 +821,30 @@ def parse_mask(data):
     }
 
 
-def mask_expr(m, w, h):
-    """按几何参数生成 geq 亮度表达式（0 = 不调色，255 = 完全调色）"""
-    cx, cy, size = m["cx"], m["cy"], m["size"]
-    feather = m["feather"]
-    if m["shape"] == "linear":
-        a = math.radians(m["angle"])
-        ca, sa = math.cos(a), math.sin(a)
-        v = f"(0.5+((X/W-{cx:.4f})*{ca:.4f}+(Y/H-{cy:.4f})*{sa:.4f})/{size:.4f})"
-    elif m["shape"] == "radial":
-        ratio = (h / w) if w else 1.0
-        v = (f"({size:.4f}-sqrt(pow(X/W-{cx:.4f},2)"
-             f"+pow((Y/H-{cy:.4f})*{ratio:.4f},2)))/{feather:.4f}")
-    else:  # rect
-        v = (f"(1-max(abs(X/W-{cx:.4f})/{size:.4f},"
-             f"abs(Y/H-{cy:.4f})/{size * m['aspect']:.4f}))/{feather:.4f}")
-    expr = f"clip({v},0,1)"
-    if m["invert"]:
-        expr = f"(1-{expr})"
-    return f"255*{expr}"
+def parse_mask(data):
+    raw = data.get("mask") or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    # 组合树：新数据带 nodes；旧数据以顶层形状作为唯一节点
+    raw_nodes = raw.get("nodes")
+    if isinstance(raw_nodes, list) and raw_nodes:
+        nodes = [parse_node(n, i) for i, n in enumerate(raw_nodes[:16])]
+        invert_all = bool(raw.get("invert"))
+    else:
+        nodes = [parse_node(raw, 0)]
+        invert_all = False  # 旧数据的反转已挂在唯一节点上，避免二次反转
+    mask = dict(nodes[0])  # 顶层保留首个节点几何，兼容旧调用
+    mask.update({
+        "enabled": bool(raw.get("enabled")),
+        "invert": invert_all,
+        "nodes": nodes,
+    })
+    return mask
 
 
 def _box_blur(a, radius, axis):
@@ -917,9 +936,56 @@ def _drawn_mask_array(m, w, h):
             r = int(round(m["feather"] * min(w, h) * 0.25))
             if r >= 1:
                 mask = _blur2d(mask, r)
-    if m["invert"]:
-        mask = 1.0 - mask
     return mask
+
+
+def _geom_mask_array(node, w, h):
+    """单个几何节点 → 灰度数组（0~1），与旧 geq 表达式语义一致"""
+    if node["shape"] in ("brush", "pen"):
+        return _drawn_mask_array(node, w, h)
+    x = (np.arange(w, dtype=np.float32) + 0.5) / max(1, w)
+    y = (np.arange(h, dtype=np.float32) + 0.5) / max(1, h)
+    dx = x[None, :] - node["cx"]
+    dy = y[:, None] - node["cy"]
+    size, feather = node["size"], node["feather"]
+    if node["shape"] == "linear":
+        a = math.radians(node["angle"])
+        v = 0.5 + (dx * math.cos(a) + dy * math.sin(a)) / size
+    elif node["shape"] == "radial":
+        ratio = (h / w) if w else 1.0
+        v = (size - np.sqrt(dx * dx + (dy * ratio) ** 2)) / feather
+    else:  # rect：高宽比按画面像素计算，并支持旋转（画面上是真实的角度）
+        ratio = (h / w) if w else 1.0
+        a = math.radians(node["angle"])
+        ca, sa = math.cos(a), math.sin(a)
+        ux = dx * ca + dy * ratio * sa
+        uy = dy * ratio * ca - dx * sa
+        v = (1.0 - np.maximum(np.abs(ux) / size, np.abs(uy) / (size * node["aspect"]))) / feather
+    return np.clip(v, 0.0, 1.0).astype(np.float32)
+
+
+def _nodes_mask_array(mask, w, h):
+    """按组合树求值：添加=并集、减去=差集、交叉=交集，最后应用蒙版级反转"""
+    acc = None
+    for node in mask.get("nodes") or []:
+        if not node.get("enabled", True):
+            continue
+        a = _geom_mask_array(node, w, h)
+        if node.get("invert"):
+            a = 1.0 - a
+        if acc is None:
+            acc = a
+        elif node["op"] == "subtract":
+            acc = acc * (1.0 - a)
+        elif node["op"] == "intersect":
+            acc = acc * a
+        else:
+            acc = np.maximum(acc, a)
+    if acc is None:
+        acc = np.zeros((h, w), dtype=np.float32)
+    if mask.get("invert"):
+        acc = 1.0 - acc
+    return acc.astype(np.float32)
 
 
 def _write_pgm(path, arr):
@@ -932,34 +998,77 @@ def _write_pgm(path, arr):
 
 
 def ensure_mask_png(m, w, h):
-    """生成灰度蒙版图并缓存，尺寸与目标画面一致（画笔/钢笔为 PGM，其余为 PNG）"""
-    geo = {k: m[k] for k in ("shape", "cx", "cy", "angle", "size", "aspect",
-                             "feather", "invert", "brush_size", "strokes", "pen_points")}
-    drawn = m["shape"] in ("brush", "pen")
-    ext = ".pgm" if drawn else ".png"
+    """按组合树生成灰度蒙版图（PGM）并缓存；节点运算结果即为最终选区"""
+    if np is None:
+        raise RuntimeError("蒙版需要 numpy，请先执行 pip install numpy")
+    geo = {"nodes": m.get("nodes"), "invert": bool(m.get("invert"))}
     out = os.path.join(MASK_CACHE_DIR,
-                       _cache_key("mask", json.dumps(geo, sort_keys=True), w, h) + ext)
+                       _cache_key("mask", json.dumps(geo, sort_keys=True), w, h) + ".pgm")
     if os.path.isfile(out):
         return out
-    if drawn:
-        arr = _drawn_mask_array(m, w, h)
-        tmp = out + ".tmp"
-        _write_pgm(tmp, arr)
-        os.replace(tmp, out)
-        return out
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-           "-f", "lavfi", "-i", f"color=c=black:s={w}x{h}:d=1",
-           "-vf", f"geq=lum='{mask_expr(m, w, h)}':cb=128:cr=128,format=gray",
-           "-frames:v", "1", out]
-    with gen_sem:
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True,
-                               encoding='utf-8', errors='replace', timeout=120)
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("蒙版生成超时（120 秒）")
-    if r.returncode != 0 or not os.path.isfile(out):
-        raise RuntimeError("蒙版生成失败：" + (r.stderr or "").strip()[-300:])
+    arr = _nodes_mask_array(m, w, h)
+    tmp = out + ".tmp"
+    _write_pgm(tmp, arr)
+    os.replace(tmp, out)
     return out
+
+
+def mask_bbox(pgm_path):
+    """蒙版有效像素包围盒 → (x, y, w, h, 面积占比)
+
+    逐个蒙版做整帧调色的开销最大；知道蒙版只覆盖画面一小块时，
+    只对这块区域跑调色滤镜，再把结果叠回原位，结果完全一致但快很多。
+    包围盒结果写在 PGM 旁边的 .json 里，避免每次重新扫描大图。
+    """
+    side = pgm_path + ".bbox2.json"
+    try:
+        with open(side, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        box = data["box"]
+        return (tuple(box) if box else None), float(data["area"])
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    if np is None:
+        return None, 1.0
+    box, area = None, 1.0
+    try:
+        with open(pgm_path, "rb") as f:
+            f.read(2)
+            f.readline()
+            w, h = [int(v) for v in f.readline().split()[:2]]
+            f.readline()
+            arr = np.frombuffer(f.read(), dtype=np.uint8).reshape(h, w)
+    except Exception:
+        return None, 1.0
+    ys, xs = np.where(arr > 2)
+    count = len(xs)  # 非有效像素视为透明，bbox 取有效像素外接矩形
+    if count and count < w * h:
+        pad = 2
+        x0 = (max(0, int(xs.min()) - pad) // 2) * 2
+        y0 = (max(0, int(ys.min()) - pad) // 2) * 2
+        x1 = min(w, ((int(xs.max()) + 1 + pad + 1) // 2) * 2)
+        y1 = min(h, ((int(ys.max()) + 1 + pad + 1) // 2) * 2)
+        bw, bh = x1 - x0, y1 - y0
+        # 宽高取偶数：部分滤镜（如 colortemperature）会在内部转成 4:2:0，奇数尺寸会丢一行
+        bw -= bw % 2
+        bh -= bh % 2
+        if bw >= 2 and bh >= 2:
+            box = [x0, y0, bw, bh]
+            area = bw * bh / float(w * h)
+    try:
+        with open(side, "w", encoding="utf-8") as f:
+            json.dump({"box": box, "area": area}, f)
+    except OSError:
+        pass
+    return (tuple(box) if box else None), area
+
+
+def ensure_mask_layers(layers, w, h):
+    """为每层蒙版准备灰度图与包围盒（渲染用）"""
+    for layer in layers:
+        png = ensure_mask_png(layer["mask"], w, h)
+        layer["png"] = png
+        layer["bbox"], layer["bbox_area"] = mask_bbox(png)
 
 
 def parse_masks(data):
@@ -1077,11 +1186,10 @@ def thumb():
     if info["width"] and info["height"]:
         size = (w, max(2, int(round(info["height"] * w / float(info["width"]) / 2)) * 2))
     layers = mask_render_list(masks) if size else []
-    for layer in layers:
-        try:
-            layer["png"] = ensure_mask_png(layer["mask"], size[0], size[1])
-        except RuntimeError as e:
-            return jsonify({"error": str(e)}), 500
+    try:
+        ensure_mask_layers(layers, size[0], size[1])
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
 
     key = _cache_key('thumb', video, _file_mtime(video), lut, _file_mtime(lut),
                      lut2, _file_mtime(lut2), s1, s2, w, size,
@@ -1148,11 +1256,10 @@ def preview_graded():
     if info["width"] and info["height"]:
         size = (max(2, int(round(info["width"] * 720 / float(info["height"]) / 2)) * 2), 720)
     layers = mask_render_list(masks) if size else []
-    for layer in layers:
-        try:
-            layer["png"] = ensure_mask_png(layer["mask"], size[0], size[1])
-        except RuntimeError as e:
-            return jsonify({"error": str(e)}), 500
+    try:
+        ensure_mask_layers(layers, size[0], size[1])
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
     key = _cache_key('graded', video, _file_mtime(video), lut, _file_mtime(lut),
                      lut2, _file_mtime(lut2), s1, s2, size,
                      json.dumps(grading, sort_keys=True),
@@ -1166,24 +1273,60 @@ def preview_graded():
             stages.append((lut2, s2))
         graph = build_filter_graph(stages, 'gbrp', 'yuv420p',
                                    size=size, grading=grading, mask_layers=layers,
-                                   scale_flags='bilinear')
-        cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-               "-i", video]
+                                   scale_flags='bilinear', fps_cap=30)
+        mask_inputs = []
         for layer in layers:
             # 预览最长 8 秒，蒙版读取上限 20 秒即可，避免源无帧时死循环
-            cmd += ["-loop", "1", "-framerate", str(info["fps"]), "-t", "20", "-i", layer["png"]]
+            mask_inputs += ["-loop", "1", "-framerate", str(info["fps"]), "-t", "20",
+                            "-i", layer["png"]]
         body = ["-t", "8",
                 "-filter_complex", graph, "-map", "[vo]", "-map", "0:a?", "-g", "15",
                 "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k",
                 "-movflags", "+faststart", out]
-        # 720p 短片段用 CPU ultrafast 更快（NVENC 初始化开销大于收益）
-        enc = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"]
+        # 4K / 高帧率素材单靠 CPU 解码就要十几秒，用 NVDEC 硬解能省掉大半；
+        # 1080p 及以下解码本身就快，硬解的显存拷贝反而拖慢，因此按像素率判断
+        heavy = _pixel_rate(info) >= 2.0e8
+
+        def run_preview(mode):
+            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+            if mode == 'hw':
+                cmd += ["-hwaccel", "cuda"]
+            cmd += ["-i", video] + mask_inputs
+            if mode in ('hw', 'gpu'):
+                # 编码交由显卡（NVENC）；滤镜仍走 CPU，避免帧回读带来的额外开销
+                cmd += ["-c:v", "h264_nvenc", "-preset", "p2", "-tune", "hq",
+                        "-rc", "vbr", "-cq", "23", "-b:v", "0"]
+            else:
+                cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"]
+            return subprocess.run(cmd + body, capture_output=True, text=True,
+                                  encoding='utf-8', errors='replace', timeout=300)
+
+        global PREVIEW_GPU_OK, PREVIEW_HW_OK
+        # 用户在主界面选择的渲染方式：GPU（硬解+NVENC）或纯 CPU；
+        # 选 GPU 但驱动不可用时仍会回退 CPU，保证没有显卡的设备也能正常预览
+        want_gpu = bool(data.get('render_gpu', True))
+        modes = []
+        if want_gpu and PREVIEW_GPU_OK:
+            if heavy and PREVIEW_HW_OK is not False:
+                modes.append('hw')
+            modes.append('gpu')
+        modes.append('cpu')
         with gen_sem:
-            try:
-                r = subprocess.run(cmd + enc + body, capture_output=True, text=True,
-                                   encoding='utf-8', errors='replace', timeout=300)
-            except subprocess.TimeoutExpired:
-                return jsonify({"error": "调色预览生成超时（300 秒）"}), 500
+            r = None
+            for mode in modes:
+                try:
+                    r = run_preview(mode)
+                except subprocess.TimeoutExpired:
+                    return jsonify({"error": "调色预览生成超时（300 秒）"}), 500
+                if r.returncode == 0 and os.path.isfile(out):
+                    break
+                # 记录失效的路径，避免每次预览都重复踩同一个坑
+                if mode == 'hw':
+                    PREVIEW_HW_OK = False
+                elif mode == 'gpu':
+                    PREVIEW_GPU_OK = False
+                if os.path.exists(out):
+                    os.remove(out)
         if r.returncode != 0 or not os.path.isfile(out):
             tail = "\n".join((r.stderr or '').strip().splitlines()[-5:])
             return jsonify({"error": "调色预览生成失败：" + tail[-400:]}), 500
@@ -1391,13 +1534,14 @@ def mask_render_list(masks):
 
 
 def build_filter_graph(stages, fmt_in, fmt_out, size=None, grading=None, mask_layers=None,
-                       scale_flags='lanczos'):
+                       scale_flags='lanczos', fps_cap=None):
     """构建滤镜图：缩放 → 格式 → 全局调色/多级 LUT → 逐个蒙版叠加局部调色 → 输出格式。
 
     stages: [(LUT 路径, 强度)]，强度 0 跳过、100 全量、中间值用 blend 插值
     size: (宽, 高)；先缩放再转平面 RGB，避免在原始分辨率上做整帧格式转换
     grading: parse_grading() 结果
     mask_layers: mask_render_list() 结果，每层的蒙版图按顺序作为输入 1..N
+    fps_cap: 最高输出帧率；预览用 30 帧，减少高帧率素材的滤镜计算量
     """
     pre, post = grading_steps(grading)
     layers = mask_layers or []
@@ -1428,11 +1572,12 @@ def build_filter_graph(stages, fmt_in, fmt_out, size=None, grading=None, mask_la
                            f'blend=all_mode=normal:all_opacity={strength / 100.0:.3f}')
         return cur
 
+    head = [f'fps={fps_cap}'] if fps_cap else []
     if size:
-        base = emit('[0:v]', f'scale={size[0]}:{size[1]}:flags={scale_flags}')
+        base = emit('[0:v]', ','.join(head + [f'scale={size[0]}:{size[1]}:flags={scale_flags}']))
         base = emit(f'[{base}]', f'format={fmt_in}')
     else:
-        base = emit('[0:v]', f'format={fmt_in}')
+        base = emit('[0:v]', ','.join(head + [f'format={fmt_in}']))
 
     cur = base
     for f in pre:
@@ -1440,11 +1585,22 @@ def build_filter_graph(stages, fmt_in, fmt_out, size=None, grading=None, mask_la
     cur = apply_luts(cur)
 
     # 蒙版：每层拆出「当前画面」与「该蒙版调色后的画面」，用灰度蒙版作 alpha 叠加回去
+    # 蒙版只覆盖一小块画面时，调色只在包围盒内做，再叠回原位：结果一致但计算量大幅下降
     mask_fmt = 'gray10le' if fmt_in.endswith('10le') else 'gray'
     for idx, layer in enumerate(layers, start=1):
         counter[0] += 1
         tag = counter[0]
         parts.append(f'[{cur}]split=2[base{tag}][grade{tag}]')
+        box = layer.get("bbox")
+        if box and layer.get("bbox_area", 1.0) <= CROP_AREA_LIMIT:
+            x, y, bw, bh = box
+            gc = emit(f'[grade{tag}]', f'crop={bw}:{bh}:{x}:{y}')
+            for f in layer["filters"]:
+                gc = emit(f'[{gc}]', f)
+            parts.append(f'[{idx}:v]crop={bw}:{bh}:{x}:{y},format={mask_fmt}[mask{tag}]')
+            merged = emit(f'[{gc}][mask{tag}]', 'alphamerge')
+            cur = emit(f'[base{tag}][{merged}]', f'overlay=x={x}:y={y}:shortest=1')
+            continue
         mc = f'grade{tag}'
         for f in layer["filters"]:
             mc = emit(f'[{mc}]', f)
@@ -1476,8 +1632,7 @@ def convert_one(item, lut_path, use_gpu, quality, bit_depth,
     layers = mask_render_list(masks) if info["width"] and info["height"] else []
     if layers:
         mw, mh = size if size else (info["width"], info["height"])
-        for layer in layers:
-            layer["png"] = ensure_mask_png(layer["mask"], mw, mh)
+        ensure_mask_layers(layers, mw, mh)
     filter_complex = build_filter_graph(stages, fmt_in, fmt_out,
                                         size=size, grading=grading, mask_layers=layers)
     pix_fmt = fmt_out

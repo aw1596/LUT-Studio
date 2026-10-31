@@ -19,11 +19,11 @@ function paint() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   ctx.clearRect(0, 0, w, h)
 
-  if (app.mask.shape === 'brush') {
-    const radius = Math.max(2, app.mask.brush_size * Math.min(w, h))
+  if (app.activeNode.shape === 'brush') {
+    const radius = Math.max(2, app.activeNode.brush_size * Math.min(w, h))
     ctx.lineJoin = 'round'
     ctx.lineCap = 'round'
-    for (const stroke of app.mask.strokes) {
+    for (const stroke of app.activeNode.strokes) {
       if (!stroke.length) continue
       ctx.beginPath()
       ctx.moveTo(stroke[0].x * w, stroke[0].y * h)
@@ -36,7 +36,7 @@ function paint() {
       ctx.stroke()
     }
   } else {
-    const pts = app.mask.pen_points
+    const pts = app.activeNode.pen_points
     if (pts.length) {
       ctx.beginPath()
       ctx.moveTo(pts[0].x * w, pts[0].y * h)
@@ -95,7 +95,7 @@ function onUp() {
 
 watch(() => app.mask, paint, { deep: true })
 watch(() => app.maskBox, paint)
-watch(() => app.mask.shape, paint)
+watch(() => app.activeNode.id, paint)
 
 onMounted(() => {
   paint()
