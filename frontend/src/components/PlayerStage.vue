@@ -14,6 +14,7 @@ const app = inject('app')
         <span class="name">{{ app.currentClip.name }}</span>
         <span v-if="app.previewingLut" style="color:var(--accent-2)">LUT 预览</span>
         <span v-if="app.previewLow && app.playUrl" style="color:#e6a23c">快速预览</span>
+        <span v-if="app.proxyText" style="color:#e6a23c">{{ app.proxyText }}</span>
         <span v-if="app.hasAdjust" style="color:var(--accent)">已调色</span>
       </div>
       <div class="compare-hold" v-if="app.currentClip && app.showThumb"

@@ -129,11 +129,16 @@ const app = reactive({
   // 播放用低画质片段缓存：蒙版编辑稳定后后台预渲染，播放时直接命中
   playCacheUrl: '',
   playCacheKey: '',
+  playHighUrl: '',   // 播放用高画质（720p）预览片段缓存
+  playHighKey: '',
   playWarming: false,
   warmTimer: null,
   warmTask: null,
   previewLow: false,
   thumbLoading: false,
+  proxyStates: {},   // 素材代理状态：path -> {state, progress}
+  proxyText: '',     // 播放时代理生成进度提示
+  pendingSeek: 0,    // 切换播放源后要恢复的播放位置
   mainThumbUrl: '',
   compare: false,
   thumbTimer: null,
@@ -544,6 +549,12 @@ app.onMediaMeta = (ev) => {
   if (el.videoWidth && el.videoHeight) app.mediaAspect = el.videoWidth / el.videoHeight
   if (el.duration) app.playDuration = el.duration
   app.playTime = 0
+  if (app.pendingSeek > 0) {
+    // 代理就绪后切换播放源：回到原来的位置继续
+    el.currentTime = Math.min(app.pendingSeek, el.duration || app.pendingSeek)
+    app.playTime = el.currentTime
+    app.pendingSeek = 0
+  }
   app.playing = !el.paused
   nextTick(app.updateMaskBox)
 }
@@ -701,6 +712,7 @@ app.scanDir = async () => {
       app.sel = d.files.map(f => f.path)
       if (d.files.length) { app.currentPath = d.files[0].path; app.refreshPreview() }
       ElMessage.success(`扫描完成，共 ${d.files.length} 个视频`)
+      app.refreshProxyStates()
     }
     localStorage.setItem('osmo.lastDir', dir)
   } finally {
@@ -751,6 +763,7 @@ app.importFiles = async (fileList, source) => {
     if (!app.currentPath && first) app.currentPath = first
     ElMessage.success(`${source}导入 ${added.length} 个视频（已复制到 _imports/）`)
     app.refreshPreview()
+    app.refreshProxyStates()
     nextTick(app.updateBinNav)
   } catch (e) {
     ElMessage.error('导入失败：' + e.message)
@@ -858,34 +871,42 @@ app.playGraded = async () => {
   if (app.playWarming && app.warmTask && app.playCacheKey !== key) {
     try { await app.warmTask } catch (e) { /* 失败则继续走下面的实时生成 */ }
   }
-  // 蒙版编辑后已在后台预渲染过这段低画质预览，直接播放，不再等待
-  if (app.playCacheKey === key && app.playCacheUrl) {
+  // 蒙版编辑后已在后台预渲染过低画质片段：先秒开播放，同时生成高画质版本，好了再替换
+  const cached = app.playCacheKey === key && app.playCacheUrl
+  if (app.playHighKey === key && app.playHighUrl) {
+    app.playTime = 0
+    app.playDuration = 0
+    app.playUrl = app.playHighUrl
+    app.previewingLut = true
+    app.previewLow = false
+    return
+  }
+  if (cached) {
     app.playTime = 0
     app.playDuration = 0
     app.playUrl = app.playCacheUrl
     app.previewingLut = true
     app.previewLow = true
-    return
   }
-  app.previewLoading = true
-  app.previewText = '正在生成快速预览（低画质）…'
+  app.previewLoading = !cached
+  app.previewText = '正在生成调色预览…'
   try {
     const r = await fetch('/api/preview_graded', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(Object.assign({}, params, { quality: 'low', render_gpu: app.useGpu })),
+      body: JSON.stringify(Object.assign({}, params, { quality: 'high', render_gpu: app.useGpu })),
     })
     const d = await r.json()
     if (d.error) { ElMessage.error(d.error); return }
     if (d.url) {
-      app.playCacheUrl = d.url
-      app.playCacheKey = key
+      app.playHighKey = key
+      app.playHighUrl = d.url
+      app.playTime = 0
+      app.playDuration = 0
+      app.playUrl = d.url
+      app.previewingLut = true
+      app.previewLow = false
     }
-    app.playTime = 0
-    app.playDuration = 0
-    app.playUrl = d.url
-    app.previewingLut = true
-    app.previewLow = true
   } catch (e) {
     ElMessage.error('预览请求失败：' + e)
   } finally {
@@ -896,7 +917,7 @@ app.playGraded = async () => {
 app.playOriginal = async () => {
   if (!app.currentPath) return
   app.previewLoading = true
-  app.previewText = '正在准备原片预览（HEVC 首次需转码）…'
+  app.previewText = '正在准备原片预览…'
   try {
     const r = await fetch('/api/preview/ensure', {
       method: 'POST',
@@ -907,14 +928,85 @@ app.playOriginal = async () => {
     if (d.error) { ElMessage.error(d.error); return }
     app.playTime = 0
     app.playDuration = 0
-    app.playUrl = d.url
     app.previewingLut = false
     app.previewLow = false
+    app.pendingSeek = 0
+    // 重素材走后台代理：就绪就直接播代理，未就绪先等（原片浏览器可能放不了）
+    if (d.url) {
+      app.playUrl = d.url
+      app.previewLoading = false
+    } else {
+      app.playUrl = ''
+      app.previewText = '正在生成播放代理…'
+    }
+    if (d.state && d.state !== 'ready') app.watchProxy(d.proxy_url, !d.url)
   } catch (e) {
     ElMessage.error('预览请求失败：' + e)
   } finally {
-    app.previewLoading = false
+    if (app.playUrl) app.previewLoading = false
   }
+}
+
+// 轮询代理生成进度；就绪后把播放源换成代理并保持播放位置
+let proxyWatchTimer = null
+app.watchProxy = (proxyUrl, waitForIt) => {
+  const path = app.currentPath
+  if (proxyWatchTimer) clearInterval(proxyWatchTimer)
+  app.proxyText = waitForIt ? '' : '代理生成中…'
+  const tick = async () => {
+    if (app.currentPath !== path) {
+      clearInterval(proxyWatchTimer); proxyWatchTimer = null; app.proxyText = ''
+      return
+    }
+    try {
+      const r = await fetch('/api/proxy/states', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paths: [path] }),
+      })
+      const d = await r.json()
+      const st = (d.states || {})[path]
+      const pct = st ? Math.round((st.progress || 0) * 100) : 0
+      if (st && st.state === 'ready') {
+        clearInterval(proxyWatchTimer); proxyWatchTimer = null; app.proxyText = ''
+        app.previewText = ''
+        app.pendingSeek = app.mediaEl ? app.mediaEl.currentTime : 0
+        app.playUrl = proxyUrl
+        app.previewLoading = false
+      } else if (st && st.state === 'failed') {
+        clearInterval(proxyWatchTimer); proxyWatchTimer = null; app.proxyText = ''
+        app.previewText = ''
+        app.previewLoading = false
+        ElMessage.error('播放代理生成失败，请检查原片是否完整')
+      } else if (st) {
+        const label = st.state === 'waiting' ? '代理排队中…' : `代理生成中 ${pct}%`
+        if (waitForIt) app.previewText = label
+        else app.proxyText = label
+      }
+    } catch (e) { /* 下一轮再试 */ }
+  }
+  tick()
+  proxyWatchTimer = setInterval(tick, 800)
+}
+
+// 素材界面：批量查代理状态，有任务在跑时自动续查
+app.refreshProxyStates = async () => {
+  const paths = app.files.map(f => f.path)
+  if (!paths.length) return
+  try {
+    const r = await fetch('/api/proxy/states', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ paths }),
+    })
+    const d = await r.json()
+    app.proxyStates = d.states || {}
+  } catch (e) { return }
+  const busy = paths.some(p => {
+    const s = app.proxyStates[p]
+    return s && (s.state === 'waiting' || s.state === 'making')
+  })
+  if (busy) setTimeout(app.refreshProxyStates, 1200)
 }
 
 app.stopPlay = () => {
@@ -1014,6 +1106,11 @@ app.statusText = (s) => ({ pending: '等待', converting: '转换中', done: '�
 app.progStatus = (s) => s === 'done' ? 'success' : (s === 'error' ? 'exception' : undefined)
 
 // ---------- watchers ----------
+watch(() => app.currentPath, () => {
+  app.proxyText = ''
+  app.previewLoading = false
+  if (proxyWatchTimer) { clearInterval(proxyWatchTimer); proxyWatchTimer = null }
+})
 watch(() => app.files, () => nextTick(app.updateBinNav))
 watch(() => app.lutPath, (v, old) => {
   // LUT 列表首次加载会赋值 lutPath，此时只刷新缩略图，避免打断正在播放的预览

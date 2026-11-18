@@ -2,6 +2,12 @@
 import { inject } from 'vue'
 
 const app = inject('app')
+
+// 不在导出页时，点导出先跳到导出选项；已在导出页再点才开始导出
+const onExport = () => {
+  if (app.tab !== 'export') { app.tab = 'export'; return }
+  app.start()
+}
 </script>
 
 <template>
@@ -21,7 +27,8 @@ const app = inject('app')
       </span>
     </div>
     <el-button v-if="app.hasRunning" type="danger" plain size="small" @click="app.stopAll">暂停全部</el-button>
-    <el-button type="primary" class="export-btn" :disabled="!app.canStart" @click="app.start">
+    <!-- 不在导出页时始终可点（点了先跳转到导出选项）；已在导出页才按条件禁用 -->
+    <el-button type="primary" class="export-btn" :disabled="app.tab === 'export' && !app.canStart" @click="onExport">
       导出{{ app.sel.length ? `（${app.sel.length}）` : '' }}
     </el-button>
   </header>

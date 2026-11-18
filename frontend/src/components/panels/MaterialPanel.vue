@@ -2,6 +2,16 @@
 import { inject } from 'vue'
 
 const app = inject('app')
+
+// 代理状态：waiting/making/ready/failed；只对重素材显示
+const proxyLabel = (f) => {
+  const s = app.proxyStates[f.path]
+  if (!s) return ''
+  if (s.state === 'waiting') return '代理排队'
+  if (s.state === 'making') return `代理 ${Math.round((s.progress || 0) * 100)}%`
+  if (s.state === 'failed') return '代理失败'
+  return ''
+}
 </script>
 
 <template>
@@ -31,6 +41,7 @@ const app = inject('app')
              @click="app.toggleClip(f)">
           <img class="media-cover" :src="app.thumbUrl({ path: f.path, w: 240, first: 1 })" loading="lazy" alt="">
           <span class="media-check">✓</span>
+          <span class="proxy-tag" v-if="proxyLabel(f)">{{ proxyLabel(f) }}</span>
           <div class="media-meta">
             <div class="media-name" :title="f.name">{{ f.name }}</div>
             <div class="media-sub">{{ app.fmtSize(f.size) }} · {{ app.fmtDur(f.duration) }}</div>
@@ -64,6 +75,11 @@ const app = inject('app')
   opacity: 0; transition: .15s;
 }
 .media-card.on .media-check { opacity: 1; }
+.proxy-tag {
+  position: absolute; left: 5px; bottom: 44px;
+  padding: 1px 5px; border-radius: 3px;
+  background: rgba(0, 0, 0, .62); color: #e6a23c; font-size: 10px;
+}
 .media-meta { padding: 4px 6px 6px; }
 .media-name {
   font-size: 11px; color: #c9c9d2;

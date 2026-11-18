@@ -24,6 +24,7 @@ RESTORE_LUTS_DIR = os.path.join(LUTS_DIR, "restore")  # 官方灰片还原 LUT�
 LOG_STYLE_LUTS_DIR = os.path.join(LUTS_DIR, "log_style")  # Log 直转风格化 LUT（输入为 Log，输出 Rec.709 + 风格）
 CREATIVE_LUTS_DIR = os.path.join(LUTS_DIR, "creative")  # 个性化 / 风格 LUT（输入为 Rec.709）
 PREVIEW_CACHE_DIR = os.path.join(BASE_DIR, "_preview_cache")
+PROXY_CACHE_DIR = os.path.join(BASE_DIR, "_proxy_cache")  # 重素材的轻量播放/渲染代理
 THUMB_CACHE_DIR = os.path.join(BASE_DIR, "_thumb_cache")
 MASK_CACHE_DIR = os.path.join(BASE_DIR, "_mask_cache")
 GRADING_CACHE_DIR = os.path.join(BASE_DIR, "_grading_cache")
@@ -34,6 +35,7 @@ os.makedirs(RESTORE_LUTS_DIR, exist_ok=True)
 os.makedirs(LOG_STYLE_LUTS_DIR, exist_ok=True)
 os.makedirs(CREATIVE_LUTS_DIR, exist_ok=True)
 os.makedirs(PREVIEW_CACHE_DIR, exist_ok=True)
+os.makedirs(PROXY_CACHE_DIR, exist_ok=True)
 os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
 os.makedirs(MASK_CACHE_DIR, exist_ok=True)
 os.makedirs(GRADING_CACHE_DIR, exist_ok=True)
@@ -143,6 +145,7 @@ def list_videos():
                 "size": os.path.getsize(full),
                 "duration": get_video_duration(full),
             })
+    warm_proxies([f["path"] for f in files])
     return jsonify({"files": files})
 
 
@@ -180,6 +183,7 @@ def import_files():
         })
     if not results:
         return jsonify({"error": "仅支持 mp4 / mov / mkv / avi / mxf / webm 视频"}), 400
+    warm_proxies([f["path"] for f in results])
     return jsonify({"files": results})
 
 
@@ -245,34 +249,32 @@ def upload_lut():
 
 @app.route('/api/preview/ensure', methods=['POST'])
 def preview_ensure():
-    """确保有可播放的预览流。H.264 的 mp4/mov 直接播原文件；HEVC 等格式生成 720p 代理。"""
+    """准备可播放的预览流。
+
+    轻量素材（≤1080p 的 8-bit H.264 等）直接播原文件；重素材播后台生成的轻量代理：
+    代理已就绪返回代理地址，未就绪返回状态与进度供前端轮询（在此之前可先播原片）。
+    """
     path = (request.get_json(force=True).get('path') or '').strip().strip('"')
     if not os.path.isfile(path):
         return jsonify({"error": "文件不存在"}), 404
 
-    codec = get_video_codec(path)
-    ext = os.path.splitext(path)[1].lower()
-    if codec == 'h264' and ext in ('.mp4', '.mov', '.m4v'):
-        return jsonify({"url": "/api/preview_file?path=" + path, "proxied": False})
+    # 浏览器能直接播的容器 + 轻量编码才播原文件，其余一律走代理
+    if not needs_proxy(path):
+        return jsonify({"url": "/api/preview_file?path=" + path, "proxied": False, "state": None})
 
-    # 生成预览代理（缓存按路径+修改时间命名）
-    key = hashlib.md5((path + str(os.path.getmtime(path))).encode()).hexdigest()
-    cache_path = os.path.join(PREVIEW_CACHE_DIR, key + ".mp4")
-    if not os.path.isfile(cache_path):
-        cmd = [
-            "ffmpeg", "-y", "-i", path,
-            "-vf", "scale=-2:720",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
-            "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k",
-            "-movflags", "+faststart",
-            cache_path,
-        ]
-        r = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
-        if r.returncode != 0 or not os.path.isfile(cache_path):
-            tail = "\n".join(r.stderr.strip().splitlines()[-8:])
-            return jsonify({"error": "预览生成失败：" + tail[-500:]}), 500
-    return jsonify({"url": "/api/preview_file?path=" + cache_path, "proxied": True})
+    try:
+        out = proxy_target(path)
+    except OSError:
+        return jsonify({"url": "/api/preview_file?path=" + path, "proxied": False, "state": None})
+    ready = os.path.isfile(out)
+    state = ensure_proxy(path)
+    return jsonify({
+        # 代理未就绪时不给地址（HEVC 原片浏览器放不了），前端显示生成进度
+        "url": "/api/preview_file?path=" + out if ready else "",
+        "proxy_url": "/api/preview_file?path=" + out,
+        "proxied": ready,
+        "state": state,
+    })
 
 
 @app.route('/api/preview_file')
@@ -309,17 +311,19 @@ def probe_video(path):
         hit = _probe_cache.get(key)
     if hit is not None:
         return hit
-    info = {"width": 0, "height": 0, "duration": None, "fps": 30.0}
+    info = {"width": 0, "height": 0, "duration": None, "fps": 30.0, "codec": "", "pix_fmt": ""}
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height,avg_frame_rate",
+             "-show_entries", "stream=width,height,avg_frame_rate,codec_name,pix_fmt",
              "-show_entries", "format=duration", "-of", "json", path],
             capture_output=True, text=True, encoding='utf-8', errors='replace')
         d = json.loads(r.stdout or "{}")
         st = (d.get("streams") or [{}])[0]
         info["width"] = int(st.get("width") or 0)
         info["height"] = int(st.get("height") or 0)
+        info["codec"] = str(st.get("codec_name") or "").lower()
+        info["pix_fmt"] = str(st.get("pix_fmt") or "").lower()
         num, _, den = str(st.get("avg_frame_rate") or "0/0").partition("/")
         try:
             fps = float(num) / float(den or 1)
@@ -344,6 +348,251 @@ def _pixel_rate(info):
     return (info.get("width") or 0) * (info.get("height") or 0) * (info.get("fps") or 0)
 
 
+# === 预览代理 ===
+# 参考 openfilm 的 proxies：给重素材（4K、HEVC、10-bit、ProRes 等）做一份轻量 H.264 副本。
+# 代理用硬解 + 硬编生成（不可用时回落 x264），关键帧每 0.5 秒一个，+faststart，
+# 在后台排队逐个生成；播放、调色预览与缩略图优先读代理，导出始终用原片。
+
+PROXY_VERSION = 2  # 改变代理生成方式时递增，使旧缓存失效
+PROXY_HEIGHT = 1080  # 代理短边像素（兼顾播放流畅与预览清晰度）
+PROXY_LIGHT_CODECS = ('h264', 'vp8', 'vp9', 'av1')
+PROXY_LIGHT_PIXFMTS = ('yuv420p', 'yuvj420p')
+
+_proxy_jobs = {}  # 代理输出路径 -> {"state": waiting/making/ready/failed, "ratio", "src", "error"}
+_proxy_queue = []
+_proxy_running = False
+_proxy_lock = threading.Lock()
+_proxy_hw_decode = True  # 硬件解码失败一次后置 False，本进程不再尝试
+
+
+def is_heavy_video(info):
+    """是否为播放/解码吃力的素材：超过 1080p，或不是 8-bit H.264/VP8/VP9/AV1 4:2:0"""
+    w, h = int(info.get("width") or 0), int(info.get("height") or 0)
+    if not (w > 0 and h > 0):
+        return False
+    return (max(w, h) > 1920 or min(w, h) > 1080
+            or (info.get("codec") or '') not in PROXY_LIGHT_CODECS
+            or (info.get("pix_fmt") or '') not in PROXY_LIGHT_PIXFMTS)
+
+
+PROXY_PLAYABLE_EXTS = ('.mp4', '.mov', '.m4v', '.webm')
+
+
+def needs_proxy(path):
+    """是否需要代理：浏览器不能直接播的容器，或解码吃力的编码"""
+    if os.path.splitext(path)[1].lower() not in PROXY_PLAYABLE_EXTS:
+        return True
+    return is_heavy_video(probe_video(path))
+
+
+def proxy_size(w, h):
+    """代理尺寸：短边缩到 PROXY_HEIGHT，保持长宽比且为偶数，不放大"""
+    short = min(w, h)
+    k = min(1.0, PROXY_HEIGHT / float(short)) if short else 1.0
+    even = lambda n: max(2, int(round(n / 2.0)) * 2)
+    return even(w * k), even(h * k)
+
+
+def proxy_target(path):
+    """代理缓存路径：按文件路径 + 大小 + 修改时间 + 版本命名，源文件一变就重新生成"""
+    st = os.stat(path)
+    raw = "|".join(str(x) for x in (PROXY_VERSION, os.path.abspath(path), st.st_size,
+                                    int(st.st_mtime), PROXY_HEIGHT))
+    return os.path.join(PROXY_CACHE_DIR, hashlib.md5(raw.encode('utf-8')).hexdigest() + ".mp4")
+
+
+def ready_proxy(path):
+    """已生成好的代理路径；素材轻量或代理未就绪时返回 None"""
+    try:
+        if not needs_proxy(path):
+            return None
+        out = proxy_target(path)
+    except OSError:
+        return None
+    return out if os.path.isfile(out) else None
+
+
+def proxy_state(path):
+    """代理状态：None=无需代理，waiting / making / ready / failed"""
+    try:
+        if not needs_proxy(path):
+            return None
+        out = proxy_target(path)
+    except OSError:
+        return None
+    if os.path.isfile(out):
+        return "ready"
+    with _proxy_lock:
+        job = _proxy_jobs.get(out)
+        return job["state"] if job else None
+
+
+def ensure_proxy(path):
+    """把重素材排进代理队列（已在队列或已就绪则跳过），返回当前状态"""
+    global _proxy_running
+    try:
+        if not needs_proxy(path):
+            return None
+        out = proxy_target(path)
+    except OSError:
+        return None
+    if os.path.isfile(out):
+        return "ready"
+    with _proxy_lock:
+        job = _proxy_jobs.get(out)
+        if job is None:
+            job = {"state": "waiting", "ratio": 0.0, "src": path, "error": None}
+            _proxy_jobs[out] = job
+            _proxy_queue.append(out)
+        state = job["state"]
+        start = not _proxy_running and _proxy_queue
+        if start:
+            _proxy_running = True
+    if start:
+        threading.Thread(target=_proxy_drain, daemon=True).start()
+    return state
+
+
+def _proxy_drain():
+    """后台单线程：一次生成一个代理，避免多个 4K 任务互相抢解码器"""
+    global _proxy_running
+    while True:
+        with _proxy_lock:
+            if not _proxy_queue:
+                _proxy_running = False
+                return
+            out = _proxy_queue.pop(0)
+            job = _proxy_jobs.get(out)
+            if job is None:
+                continue
+            job["state"] = "making"
+            job["ratio"] = 0.0
+        try:
+            _make_proxy(job["src"], out, job)
+            job["state"] = "ready"
+            job["ratio"] = 1.0
+        except Exception as e:  # 生成失败时保留状态，前端回退原片
+            job["state"] = "failed"
+            job["error"] = str(e)[-300:]
+
+
+def warm_proxies(paths):
+    """后台预热素材代理：导入 / 扫描后立刻排队，用户点播放时通常已就绪"""
+    def run():
+        for path in paths:
+            try:
+                ensure_proxy(path)
+            except Exception:
+                pass
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _proxy_attempts():
+    """解码/编码组合，按优先级：硬解+硬编 → 软解+硬编 → 软解+软编"""
+
+    def enc_hw():
+        return ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq",
+                "-rc", "vbr", "-cq", "20", "-b:v", "0"]
+
+    def enc_sw():
+        return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21"]
+
+    attempts = []
+    if NVENC_OK:
+        if _proxy_hw_decode:
+            attempts.append((["-hwaccel", "cuda"], enc_hw()))  # NVDEC 解码 + NVENC 编码
+        attempts.append(([], enc_hw()))
+    else:
+        # 没有 NVENC 时仍可尝试 D3D11 硬解，编码交给 x264
+        if _proxy_hw_decode:
+            attempts.append((["-hwaccel", "d3d11va"], enc_sw()))
+    attempts.append(([], enc_sw()))
+    return attempts
+
+
+def _make_proxy(src, out, job):
+    info = probe_video(src)
+    w, h = int(info.get("width") or 0), int(info.get("height") or 0)
+    if not (w and h):
+        raise RuntimeError("无法读取视频尺寸")
+    size = proxy_size(w, h)
+    fps = info.get("fps") or 30.0
+    gop = max(1, int(round(fps * 0.5)))  # 每 0.5 秒一个关键帧，拖动进度条即时定位
+    duration = info.get("duration") or 0
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    tmp = out + ".part.mp4"
+    tail = ""
+    global _proxy_hw_decode
+    for decode, encoder in _proxy_attempts():
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        cmd = (["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin"]
+               + decode
+               + ["-i", src, "-map", "0:v:0", "-map", "0:a?", "-sn", "-dn",
+                  "-fps_mode", "passthrough",
+                  "-vf", "scale=%d:%d:flags=lanczos" % size]
+               + encoder
+               + ["-g", str(gop), "-keyint_min", str(gop), "-pix_fmt", "yuv420p",
+                  "-c:a", "aac", "-b:a", "96k", "-ac", "2",
+                  "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", tmp])
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding='utf-8', errors='replace', bufsize=1)
+        lines = []
+        for line in proc.stdout:
+            lines.append(line)
+            if line.startswith("out_time_us=") and duration > 0:
+                try:
+                    job["ratio"] = max(0.0, min(0.99, int(line.split("=", 1)[1]) / 1e6 / duration))
+                except ValueError:
+                    pass
+        proc.wait()
+        if proc.returncode == 0 and os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
+            os.replace(tmp, out)
+            return
+        tail = "".join(lines[-6:]).strip()[-400:]
+        if decode:
+            _proxy_hw_decode = False  # 硬件解码在这台机器上不可用，本进程不再尝试
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    raise RuntimeError(tail or "ffmpeg 生成代理失败")
+
+
+@app.route('/api/proxy/states', methods=['POST'])
+def proxy_states():
+    """批量查询代理状态（素材界面显示生成进度）"""
+    data = request.get_json(force=True, silent=True) or {}
+    paths = [str(p) for p in (data.get('paths') or []) if p]
+    states = {}
+    for path in paths:
+        st = proxy_state(path)
+        if st is None:
+            states[path] = None
+            continue
+        info = {"state": st, "progress": 0.0}
+        if st in ("waiting", "making"):
+            try:
+                out = proxy_target(path)
+                with _proxy_lock:
+                    job = _proxy_jobs.get(out) or {}
+                info["progress"] = round(float(job.get("ratio") or 0.0), 3)
+            except OSError:
+                pass
+        if st == "ready":
+            info["progress"] = 1.0
+        states[path] = info
+    return jsonify({"states": states})
+
+
+@app.route('/api/proxy/ensure', methods=['POST'])
+def proxy_ensure():
+    """立刻把素材排进代理队列"""
+    data = request.get_json(force=True, silent=True) or {}
+    path = str(data.get('path') or '').strip().strip('"')
+    if not os.path.isfile(path):
+        return jsonify({"error": "文件不存在"}), 404
+    return jsonify({"state": ensure_proxy(path)})
+
+
 def _parse_curve_regions(raw):
     """曲线区域滑块：暗部 / 中间调 / 高光（-100 ~ 100）"""
     raw = raw if isinstance(raw, dict) else {}
@@ -353,7 +602,7 @@ def _parse_curve_regions(raw):
     }
 
 
-# === 调色（仿 DaVinci 一级调色） ===
+# === 调色（一级调色） ===
 
 def parse_grading(data):
     """从请求中解析调色参数：白平衡/曝光/对比/饱和/锐化 + 色轮 + 曲线 + HSL + 分离色调 + 校准"""
@@ -1117,9 +1366,11 @@ def ensure_base_frame(video, seek, size):
     out = os.path.join(BASE_CACHE_DIR, key + ".png")
     if os.path.isfile(out):
         return out
+    # 重素材已有代理时从代理取帧，省掉 4K 解码
+    src = ready_proxy(video) or video
     tmp = out + ".part.png"
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-           "-ss", f"{seek:.2f}", "-i", video, "-frames:v", "1",
+           "-ss", f"{seek:.2f}", "-i", src, "-frames:v", "1",
            "-vf", f"scale={size[0]}:{size[1]}:flags=lanczos",
            "-pix_fmt", "rgb24", tmp]
     with gen_sem:
@@ -1262,8 +1513,8 @@ def thumb():
 def preview_graded():
     """生成一段 8 秒的调色预览片段（含强度/双 LUT）。
 
-    quality=high：540p/30fps，用于正式预览；
-    quality=low：360p/24fps，用于播放时的快速低画质预览（可被前端预渲染缓存）。
+    quality=high：720p/30fps，用于正式预览与播放调色预览；
+    quality=low：540p/24fps，用于调参时的快速低画质预览（可被前端预渲染缓存）。
     """
     data = request.get_json(force=True)
     video = (data.get('path') or '').strip().strip('"')
@@ -1284,9 +1535,9 @@ def preview_graded():
     size = None
     fps_cap = 30
     if info["width"] and info["height"]:
-        # 预览只用于屏幕上看效果（播放器区域约 700px 宽）：
-        # 正式预览 540p；快速预览 360p + 24fps，耗时再降一半以上
-        ph = min(360 if quality == 'low' else 540, info["height"])
+        # 预览用于屏幕上看效果（播放器区域约 700–900px 宽）：
+        # 正式预览 720p；快速预览 540p + 24fps，耗时再降一半以上
+        ph = min(540 if quality == 'low' else 720, info["height"])
         fps_cap = 24 if quality == 'low' else 30
         size = (max(2, int(round(info["width"] * ph / float(info["height"]) / 2)) * 2), ph)
     layers = mask_render_list(masks) if size else []
@@ -1308,7 +1559,7 @@ def preview_graded():
             stages.append((lut2, s2))
         graph = build_filter_graph(stages, 'gbrp', 'yuv420p',
                                    size=size, grading=grading, mask_layers=layers,
-                                   scale_flags='bilinear', fps_cap=fps_cap)
+                                   scale_flags='lanczos', fps_cap=fps_cap)
         mask_inputs = []
         for layer in layers:
             # 预览最长 8 秒，蒙版读取上限 20 秒即可，避免源无帧时死循环
@@ -1321,22 +1572,29 @@ def preview_graded():
         # 4K / 高帧率素材单靠 CPU 解码就要十几秒，用 NVDEC 硬解能省掉大半；
         # 1080p 及以下解码本身就快，硬解的显存拷贝反而拖慢，因此按像素率判断
         heavy = _pixel_rate(info) >= 2.0e8
+        # 重素材优先用后台代理当渲染源；没有代理时顺手排队生成，本次仍用原片
+        render_src = ready_proxy(video) or video
+        if render_src == video:
+            ensure_proxy(video)
+        else:
+            heavy = False  # 代理本身是 720p H.264，不需要再硬解
 
         def run_preview(mode):
             cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
             if mode == 'hw':
                 cmd += ["-hwaccel", "cuda"]
-            cmd += ["-i", video] + mask_inputs
+            # 重素材已有代理时以代理为输入，4K 解码与缩放的开销都省掉
+            cmd += ["-i", render_src] + mask_inputs
             if mode in ('hw', 'gpu'):
                 # 编码交由显卡（NVENC）；滤镜仍走 CPU，避免帧回读带来的额外开销
-                preset, cq = ('p1', '30') if quality == 'low' else ('p2', '23')
+                preset, cq = ('p1', '28') if quality == 'low' else ('p4', '21')
                 cmd += ["-c:v", "h264_nvenc", "-preset", preset, "-tune", "hq",
                         "-rc", "vbr", "-cq", cq, "-b:v", "0"]
             else:
                 if quality == 'low':
-                    cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "32"]
-                else:
                     cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28"]
+                else:
+                    cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22"]
             return subprocess.run(cmd + body, capture_output=True, text=True,
                                   encoding='utf-8', errors='replace', timeout=300)
 
