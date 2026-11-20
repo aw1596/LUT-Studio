@@ -10,13 +10,13 @@ const app = inject('app')
     <div class="group-title">灰片还原 LUT（一级）</div>
     <div class="filters">
       <div class="filter-card" :class="{ active: !app.lutPath }" @click="app.lutPath = ''">
-        <img v-if="app.currentClip" class="thumb" :src="app.thumbUrl({ w: 200 })" loading="lazy">
+        <img v-if="app.currentClip" class="thumb" draggable="false" :src="app.thumbUrl({ w: 200 })" loading="lazy">
         <div v-else class="ph"></div>
         <div class="label">原始</div>
       </div>
       <div class="filter-card" v-for="l in app.restoreLuts" :key="l.path"
            :class="{ active: app.lutPath === l.path }" @click="app.lutPath = l.path">
-        <img v-if="app.currentClip" class="thumb" :src="app.thumbUrl({ lut: l.path, w: 200, strength: 100, noSecond: true })" loading="lazy">
+        <img v-if="app.currentClip" class="thumb" draggable="false" :src="app.thumbUrl({ lut: l.path, w: 200, strength: 100, noSecond: true })" loading="lazy">
         <div v-else class="ph"></div>
         <div class="label">{{ l.name }}</div>
       </div>
@@ -30,7 +30,7 @@ const app = inject('app')
     <div class="filters">
       <div class="filter-card" v-for="l in app.logStyleLuts" :key="l.path"
            :class="{ active: app.lutPath === l.path }" @click="app.lutPath = l.path">
-        <img v-if="app.currentClip" class="thumb" :src="app.thumbUrl({ lut: l.path, w: 200, strength: 100, noSecond: true })" loading="lazy">
+        <img v-if="app.currentClip" class="thumb" draggable="false" :src="app.thumbUrl({ lut: l.path, w: 200, strength: 100, noSecond: true })" loading="lazy">
         <div v-else class="ph"></div>
         <div class="label">{{ l.name }}</div>
       </div>
@@ -42,7 +42,7 @@ const app = inject('app')
     <div class="filters">
       <div class="filter-card" :class="{ active: !app.useSecondLut || !app.lut2Path }"
            @click="app.useSecondLut = false">
-        <img v-if="app.currentClip" class="thumb"
+        <img v-if="app.currentClip" class="thumb" draggable="false"
              :src="app.lutPath ? app.thumbUrl({ lut: app.lutPath, w: 200, strength: 100, noSecond: true }) : app.thumbUrl({ w: 200 })" loading="lazy">
         <div v-else class="ph"></div>
         <div class="label">不叠加</div>
@@ -50,7 +50,7 @@ const app = inject('app')
       <div class="filter-card" v-for="l in app.creativeLuts" :key="l.path"
            :class="{ active: app.useSecondLut && app.lut2Path === l.path }"
            @click="app.applyLookLut(l.path)">
-        <img v-if="app.currentClip" class="thumb"
+        <img v-if="app.currentClip" class="thumb" draggable="false"
              :src="app.lutPath ? app.thumbUrl({ lut: app.lutPath, lut2: l.path, w: 200, strength: 100, strength2: 100, noSecond: true }) : app.thumbUrl({ lut: l.path, w: 200, strength: 100, noSecond: true })"
              loading="lazy">
         <div v-else class="ph"></div>

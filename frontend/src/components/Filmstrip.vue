@@ -28,7 +28,7 @@ const pickedFiles = computed(() => app.files.filter(f => app.sel.includes(f.path
         <div class="clip" v-for="f in pickedFiles" :key="f.path" :style="clipStyle"
              :class="{ current: app.currentPath === f.path }"
              @click="app.focusClip(f)">
-          <img class="cover" :style="coverStyle" :src="app.thumbUrl({ path: f.path, w: 220 })" loading="lazy" alt="">
+          <img class="cover" draggable="false" :style="coverStyle" :src="app.thumbUrl({ path: f.path, w: 220 })" loading="lazy" alt="">
           <span class="dur">{{ app.fmtDur(f.duration) }}</span>
           <div class="meta">
             <div class="cname">{{ f.name }}</div>

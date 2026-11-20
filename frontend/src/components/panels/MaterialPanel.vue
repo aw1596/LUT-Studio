@@ -39,7 +39,7 @@ const proxyLabel = (f) => {
         <div class="media-card" v-for="f in app.files" :key="f.path"
              :class="{ on: app.sel.includes(f.path), cur: app.currentPath === f.path }"
              @click="app.toggleClip(f)">
-          <img class="media-cover" :src="app.thumbUrl({ path: f.path, w: 240, first: 1 })" loading="lazy" alt="">
+          <img class="media-cover" draggable="false" :src="app.thumbUrl({ path: f.path, w: 240, first: 1 })" loading="lazy" alt="">
           <span class="media-check">✓</span>
           <span class="proxy-tag" v-if="proxyLabel(f)">{{ proxyLabel(f) }}</span>
           <div class="media-meta">

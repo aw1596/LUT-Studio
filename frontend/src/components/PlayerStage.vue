@@ -2,6 +2,7 @@
 import { inject } from 'vue'
 import MaskCanvas from './MaskCanvas.vue'
 import MaskGuides from './MaskGuides.vue'
+import LutCanvas from './LutCanvas.vue'
 
 const app = inject('app')
 </script>
@@ -39,6 +40,9 @@ const app = inject('app')
         <b>{{ app.files.length ? '选择一个素材开始调色' : '扫描文件夹导入素材' }}</b>
         在右侧「素材」中填写路径并扫描，素材会出现在底部素材条
       </div>
+
+      <!-- LUT-only 实时预览：WebGL 画布覆盖在画面之上，切 LUT 无需服务端重渲染 -->
+      <LutCanvas v-if="app.clientLut && (app.playUrl || app.mainThumbUrl)" />
 
       <!-- 几何蒙版引导层：可拖拽边缘缩放、圆形箭头旋转、内侧虚线调羽化 -->
       <MaskGuides v-if="app.maskEditing && !app.isDrawnMask && (app.playUrl || app.mainThumbUrl)" />

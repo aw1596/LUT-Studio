@@ -76,6 +76,13 @@ body {
   box-shadow: 0 16px 48px rgba(0,0,0,.55); display: block;
   -webkit-user-drag: none; user-select: none; /* 避免拖动平移画面时触发浏览器原生图片拖拽 */
 }
+/* 浏览器端实时套 LUT 的画布：与画面同框、盖在媒体元素之上，不接管鼠标事件 */
+.player .lut-canvas {
+  position: absolute; z-index: 3; border-radius: 8px; pointer-events: none;
+  box-shadow: 0 16px 48px rgba(0,0,0,.55);
+}
+/* 页面内的图片一律不允许原生拖拽，否则拖动缩略图会被当成“拖入文件”触发导入提示 */
+img { -webkit-user-drag: none; user-select: none; }
 .player-empty { color: #5e5e6b; font-size: 13px; text-align: center; line-height: 2; }
 .player-empty b { display: block; font-size: 15px; color: #8a8a96; font-weight: 500; }
 .player-tag {

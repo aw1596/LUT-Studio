@@ -130,6 +130,32 @@ def get_video_codec(path):
         return ""
 
 
+def get_audio_codec(path):
+    """用 ffprobe 获取首条音轨编码；无音轨返回空串"""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0",
+             "-show_entries", "stream=codec_name",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, check=True)
+        return result.stdout.strip().lower()
+    except Exception:
+        return ""
+
+
+# MP4 容器能直接封装的音频编码；DJI 等机型常见 PCM，直接 copy 会让 MP4 打不开
+MP4_AUDIO_OK = {"aac", "mp3", "ac3", "eac3", "alac"}
+
+
+def audio_out_args(src):
+    codec = get_audio_codec(src)
+    if not codec:
+        return ["-an"]
+    if codec in MP4_AUDIO_OK:
+        return ["-c:a", "copy"]
+    return ["-c:a", "aac", "-b:a", "256k", "-ac", "2"]
+
+
 @app.route('/api/list_videos')
 def list_videos():
     directory = request.args.get('dir', '').strip().strip('"')
@@ -243,6 +269,18 @@ def upload_lut():
     save_path = os.path.join(CREATIVE_LUTS_DIR, os.path.basename(f.filename))
     f.save(save_path)
     return jsonify({"ok": True, "path": save_path, "name": f.filename})
+
+
+@app.route('/api/lut_file')
+def lut_file():
+    """把 .cube 原文交给前端：浏览器端解析成 3D 纹理做实时套 LUT"""
+    path = (request.args.get('path') or '').strip().strip('"')
+    if not path.lower().endswith('.cube') or not os.path.isfile(path):
+        return jsonify({"error": "LUT 不存在"}), 404
+    root = os.path.realpath(LUTS_DIR).lower() + os.sep
+    if not os.path.realpath(path).lower().startswith(root):
+        return jsonify({"error": "仅允许读取 luts 目录内的文件"}), 403
+    return send_file(path, mimetype='text/plain', conditional=True)
 
 
 # === 视频预览 ===
@@ -1385,6 +1423,32 @@ def ensure_base_frame(video, seek, size):
     return out
 
 
+@app.route('/api/base_frame')
+def base_frame():
+    """返回不带 LUT / 调色的基底帧（PNG），供浏览器端 WebGL 实时套 LUT"""
+    video = (request.args.get('path') or '').strip().strip('"')
+    if not os.path.isfile(video):
+        return jsonify({"error": "文件不存在"}), 404
+    info = probe_video(video)
+    if not (info["width"] and info["height"]):
+        return jsonify({"error": "无法读取视频尺寸"}), 400
+    try:
+        w = int(request.args.get('w') or 1280)
+        seek = float(request.args.get('seek') or 0)
+    except ValueError:
+        return jsonify({"error": "参数无效"}), 400
+    w = _clamp(w, 320, 1920)
+    h = max(2, int(round(info["height"] * w / float(info["width"]) / 2)) * 2)
+    dur = info["duration"] or 0
+    if dur > 0:
+        seek = _clamp(seek, 0, max(0.0, dur - 0.05))
+    try:
+        png = ensure_base_frame(video, seek, (w, h))
+    except RuntimeError as e:
+        return jsonify({"error": "基底帧生成失败：" + str(e)}), 500
+    return send_file(png, mimetype='image/png', conditional=True)
+
+
 @app.route('/api/pick_dir', methods=['POST'])
 def pick_dir():
     """弹出系统选择框（本工具为本地单机应用，选择框由服务端所在的桌面弹出）
@@ -1989,7 +2053,8 @@ def convert_one(item, lut_path, use_gpu, quality, bit_depth,
     else:
         cmd += ["-profile:v", "high"]
     cmd += [
-        "-c:a", "copy",
+        # 音频：MP4 能装的编码直接 copy；PCM 等不兼容编码转 AAC
+        *audio_out_args(input_path),
         "-progress", "pipe:1",
         "-nostats",
         output_path,

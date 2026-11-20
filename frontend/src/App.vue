@@ -135,6 +135,16 @@ const app = reactive({
   warmTimer: null,
   warmTask: null,
   previewLow: false,
+  // 浏览器端实时套 LUT：仅 LUT（无调色、无蒙版）时由 WebGL 完成，服务端只提供基底帧
+  webglOk: (() => {
+    try {
+      return !!document.createElement('canvas').getContext('webgl2')
+    } catch (e) {
+      return false
+    }
+  })(),
+  playClipPath: '',  // 当前播放内容对应的素材，用于换素材时停掉旧画面
+  playServerGraded: false,  // 播放的是服务端已渲染好的调色片段（此时浏览器不再叠 LUT）
   thumbLoading: false,
   proxyStates: {},   // 素材代理状态：path -> {state, progress}
   proxyText: '',     // 播放时代理生成进度提示
@@ -383,6 +393,10 @@ app.masksParam = () => {
   })))
 }
 
+// 能交给浏览器实时套 LUT 的条件：支持 WebGL2，且没有调色 / 蒙版需要服务端渲染
+app.clientLut = computed(() =>
+  app.webglOk && !!app.currentPath && !app.hasGrading && !app.allMasks().length)
+
 // 新建蒙版：未在编辑时创建草稿；已在编辑时把该形状作为新选区节点加入当前蒙版
 app.newMask = (shape) => {
   if (app.maskEditing) { app.addNode(shape); return }
@@ -586,23 +600,52 @@ app.thumbUrl = (opts) => {
 
 app.activeLutPath = () => app.customLut || app.lutPath
 
+// 基底帧：不含 LUT / 调色的原画面，LUT 由浏览器 WebGL 实时叠加
+app.baseFrameUrl = () => {
+  if (!app.currentPath) return ''
+  const dur = (app.currentClip && app.currentClip.duration) || 0
+  const seek = dur > 2 ? Math.min(3, dur * 0.3) : 0
+  const q = new URLSearchParams({ path: app.currentPath, seek: seek.toFixed(2), w: 1280 })
+  return '/api/base_frame?' + q.toString()
+}
+
 app.setCurrentThumb = () => {
   const lut = app.activeLutPath()
+  app.previewingLut = !!lut
+  if (app.clientLut) {
+    // 切 LUT 不再请求服务端：同一张基底帧 + 着色器重绘
+    app.mainThumbUrl = app.baseFrameUrl()
+    return
+  }
   app.mainThumbUrl = lut
     ? app.thumbUrl({ lut, strength: app.lutStrength, w: 560, full: true })
     : app.thumbUrl({ w: 560, full: true })
-  app.previewingLut = !!lut
 }
 
 app.setOriginalThumb = () => {
   if (!app.currentPath) return
-  app.mainThumbUrl = app.thumbUrl({ w: 560 })
   app.previewingLut = false
+  if (app.clientLut) return  // 同一张基底帧，仅停用着色器
+  app.mainThumbUrl = app.thumbUrl({ w: 560 })
 }
 
 app.refreshPreview = (immediate) => {
-  app.stopPlay()
   if (!app.currentPath) return
+  if (app.clientLut) {
+    // LUT-only：画面由浏览器实时叠加，播放中调 LUT 也不必重新渲染
+    clearTimeout(app.thumbTimer)
+    if (app.playServerGraded) app.stopPlay()
+    if (app.playUrl && app.playClipPath && app.playClipPath !== app.currentPath) app.stopPlay()
+    const url = app.baseFrameUrl()
+    if (url && url !== app.mainThumbUrl) {
+      app.thumbLoading = true
+      app.mainThumbUrl = url
+    }
+    if (app.compare) app.setOriginalThumb()
+    else app.previewingLut = !!app.activeLutPath()
+    return
+  }
+  app.stopPlay()
   clearTimeout(app.thumbTimer)
   app.thumbLoading = true
   // 拖动滑杆/蒙版时按最短间隔单帧刷新，松手（immediate）立即出图
@@ -864,6 +907,11 @@ app.onLutUploadError = () => { ElMessage.error('LUT 上传失败，仅支持 .cu
 // ---------- 播放 ----------
 app.playGraded = async () => {
   if (!app.currentPath) return
+  if (app.clientLut) {
+    // 只有 LUT：直接播原片 / 代理，LUT 由浏览器着色器实时叠加，无需服务端渲染
+    await app.playOriginal(true)
+    return
+  }
   clearTimeout(app.warmTimer)
   const params = app.previewParams()
   const key = JSON.stringify(params)
@@ -879,6 +927,8 @@ app.playGraded = async () => {
     app.playUrl = app.playHighUrl
     app.previewingLut = true
     app.previewLow = false
+    app.playClipPath = app.currentPath
+    app.playServerGraded = true
     return
   }
   if (cached) {
@@ -887,6 +937,8 @@ app.playGraded = async () => {
     app.playUrl = app.playCacheUrl
     app.previewingLut = true
     app.previewLow = true
+    app.playClipPath = app.currentPath
+    app.playServerGraded = true
   }
   app.previewLoading = !cached
   app.previewText = '正在生成调色预览…'
@@ -906,6 +958,8 @@ app.playGraded = async () => {
       app.playUrl = d.url
       app.previewingLut = true
       app.previewLow = false
+      app.playClipPath = app.currentPath
+      app.playServerGraded = true
     }
   } catch (e) {
     ElMessage.error('预览请求失败：' + e)
@@ -914,7 +968,7 @@ app.playGraded = async () => {
   }
 }
 
-app.playOriginal = async () => {
+app.playOriginal = async (keepLut) => {
   if (!app.currentPath) return
   app.previewLoading = true
   app.previewText = '正在准备原片预览…'
@@ -928,9 +982,12 @@ app.playOriginal = async () => {
     if (d.error) { ElMessage.error(d.error); return }
     app.playTime = 0
     app.playDuration = 0
-    app.previewingLut = false
+    // keepLut=true 表示由浏览器实时套 LUT（LUT-only 播放），否则播原片
+    app.previewingLut = keepLut === true && !!app.activeLutPath()
     app.previewLow = false
+    app.playServerGraded = false
     app.pendingSeek = 0
+    app.playClipPath = app.currentPath
     // 重素材走后台代理：就绪就直接播代理，未就绪先等（原片浏览器可能放不了）
     if (d.url) {
       app.playUrl = d.url
@@ -1015,6 +1072,8 @@ app.stopPlay = () => {
   app.playDuration = 0
   app.playing = false
   app.previewLow = false
+  app.playClipPath = ''
+  app.playServerGraded = false
 }
 
 app.onPlayEnded = () => {
