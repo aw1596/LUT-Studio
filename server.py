@@ -55,6 +55,9 @@ stop_event = threading.Event()  # 置位后所有任务停止
 current_procs = {}  # 正在运行的 ffmpeg 进程：input_path -> Popen
 procs_lock = threading.Lock()
 gen_sem = threading.Semaphore(2)  # 限制同时生成的缩略图/预览数量，避免多个 4K 解码抢资源
+# 调色交互用的单帧渲染单独排队：绝不能被后台长片段渲染堵住
+thumb_sem = threading.Semaphore(4)
+base_sem = threading.Semaphore(2)
 
 
 def _cleanup_procs():
@@ -1411,7 +1414,7 @@ def ensure_base_frame(video, seek, size):
            "-ss", f"{seek:.2f}", "-i", src, "-frames:v", "1",
            "-vf", f"scale={size[0]}:{size[1]}:flags=lanczos",
            "-pix_fmt", "rgb24", tmp]
-    with gen_sem:
+    with base_sem:
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
                                encoding='utf-8', errors='replace', timeout=90)
@@ -1561,7 +1564,7 @@ def thumb():
             cmd += ["-loop", "1", "-framerate", "1", "-t", f"{seek + 5:.1f}", "-i", layer["png"]]
         cmd += ["-filter_complex", graph, "-map", "[vo]",
                 "-frames:v", "1", "-q:v", "4", out]
-        with gen_sem:
+        with thumb_sem:
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True,
                                    encoding='utf-8', errors='replace', timeout=90)

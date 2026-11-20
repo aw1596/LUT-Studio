@@ -153,6 +153,8 @@ const app = reactive({
   compare: false,
   thumbTimer: null,
   thumbVersion: 0,
+  thumbToken: 0,        // 预览图请求序号：只允许最后一次请求替换画面
+  thumbSpinnerTimer: null,
   lastThumbAt: 0,
   pickingDir: false,
   // 可拖动的界面尺寸：右侧属性面板宽度、底部素材条高度
@@ -609,6 +611,33 @@ app.baseFrameUrl = () => {
   return '/api/base_frame?' + q.toString()
 }
 
+// 预览图预加载：新图解码完成后再替换，避免每次调参白屏闪一下
+app.preloadThumb = (url) => {
+  if (!url) return
+  if (url === app.mainThumbUrl) { app.endThumbLoading(); return }
+  const token = ++app.thumbToken
+  clearTimeout(app.thumbSpinnerTimer)
+  // 只在确实慢的时候才显示转圈，快速请求不打断操作
+  app.thumbSpinnerTimer = setTimeout(() => {
+    if (token === app.thumbToken) app.thumbLoading = true
+  }, 400)
+  const img = new Image()
+  img.onload = () => {
+    if (token !== app.thumbToken) return
+    app.mainThumbUrl = url
+    app.endThumbLoading()
+  }
+  img.onerror = () => {
+    if (token === app.thumbToken) app.endThumbLoading()
+  }
+  img.src = url
+}
+
+app.endThumbLoading = () => {
+  clearTimeout(app.thumbSpinnerTimer)
+  app.thumbLoading = false
+}
+
 app.setCurrentThumb = () => {
   const lut = app.activeLutPath()
   app.previewingLut = !!lut
@@ -617,16 +646,17 @@ app.setCurrentThumb = () => {
     app.mainThumbUrl = app.baseFrameUrl()
     return
   }
-  app.mainThumbUrl = lut
+  // 拖动中与松手都渲染同一尺寸，避免过程中清晰度跳变
+  app.preloadThumb(lut
     ? app.thumbUrl({ lut, strength: app.lutStrength, w: 560, full: true })
-    : app.thumbUrl({ w: 560, full: true })
+    : app.thumbUrl({ w: 560, full: true }))
 }
 
 app.setOriginalThumb = () => {
   if (!app.currentPath) return
   app.previewingLut = false
   if (app.clientLut) return  // 同一张基底帧，仅停用着色器
-  app.mainThumbUrl = app.thumbUrl({ w: 560 })
+  app.preloadThumb(app.thumbUrl({ w: 560 }))
 }
 
 app.refreshPreview = (immediate) => {
@@ -647,14 +677,12 @@ app.refreshPreview = (immediate) => {
   }
   app.stopPlay()
   clearTimeout(app.thumbTimer)
-  app.thumbLoading = true
-  // 拖动滑杆/蒙版时按最短间隔单帧刷新，松手（immediate）立即出图
-  const wait = immediate ? 0 : Math.max(0, 150 - (Date.now() - (app.lastThumbAt || 0)))
+  // 拖动滑杆时 80ms 节流单帧刷新，松手（immediate）立即出图
+  const wait = immediate ? 0 : Math.max(0, 80 - (Date.now() - (app.lastThumbAt || 0)))
   app.thumbTimer = setTimeout(() => {
     app.lastThumbAt = Date.now()
     if (app.compare) app.setOriginalThumb()
     else app.setCurrentThumb()
-    if (!app.currentPath) app.thumbLoading = false
   }, wait)
   if (app.allMasks().length) app.scheduleWarmPreview()
 }
