@@ -154,6 +154,10 @@ const app = reactive({
   thumbTimer: null,
   thumbVersion: 0,
   thumbToken: 0,        // 预览图请求序号：只允许最后一次请求替换画面
+  // 浏览器着色器渲染 → 服务端校准：clientCalibrated 表示画面已是服务端结果
+  clientCalibrated: false,
+  calibTimer: null,
+  calibToken: 0,
   thumbSpinnerTimer: null,
   lastThumbAt: 0,
   pickingDir: false,
@@ -200,6 +204,19 @@ const gradingUsed = (g) => {
 }
 app.gradingUsed = gradingUsed
 app.hasGrading = computed(() => gradingUsed(app.grading))
+// 浏览器着色器能精确复刻的一级调色子集：曝光/对比/高光/阴影/白点/黑点/饱和/自然饱和/
+// 色温/色调/RGB 曲线。色轮、曲线区域、HSL、分离色调、校准、锐化仍交给服务端。
+const gradingClientSafe = (g) => {
+  if (!g) return true
+  if ((g.sharpness || 0) >= 1) return false
+  if (g.lift.x || g.lift.y || g.gamma.x || g.gamma.y || g.gain.x || g.gain.y) return false
+  const reg = g.curve_regions || {}
+  if (reg.shadows || reg.midtones || reg.highlights) return false
+  if (Object.values(g.hsl || {}).some(v => v.h || v.s || v.l)) return false
+  if (g.split && (g.split.shadow_sat || g.split.highlight_sat)) return false
+  if (Object.values(g.calibration || {}).some(v => v)) return false
+  return true
+}
 // 当前正在编辑的蒙版：草稿优先，其次是列表中被选中的蒙版
 app.maskEditing = computed(() =>
   !!(app.maskDraft || app.masks.some(m => m.id === app.maskId)))
@@ -395,9 +412,12 @@ app.masksParam = () => {
   })))
 }
 
-// 能交给浏览器实时套 LUT 的条件：支持 WebGL2，且没有调色 / 蒙版需要服务端渲染
+// 能交给浏览器实时渲染的条件：支持 WebGL2、没有蒙版，且调色参数都在着色器子集内
 app.clientLut = computed(() =>
-  app.webglOk && !!app.currentPath && !app.hasGrading && !app.allMasks().length)
+  app.webglOk && !!app.currentPath && !app.allMasks().length && gradingClientSafe(app.grading))
+// 画布是否真的需要绘制：服务端调色片段不再叠一层；校准结果替换后交给服务端画面
+app.clientShade = computed(() =>
+  app.clientLut && app.previewingLut && !app.playServerGraded && !app.clientCalibrated)
 
 // 新建蒙版：未在编辑时创建草稿；已在编辑时把该形状作为新选区节点加入当前蒙版
 app.newMask = (shape) => {
@@ -580,6 +600,7 @@ app.thumbUrl = (opts) => {
   if (!o.path) return ''
   const q = new URLSearchParams({ path: o.path, w: o.w })
   if (o.first) q.set('first', '1')  // 素材封面取第一帧
+  if (o.png) q.set('png', '1')      // 校准用无损 PNG，避免 JPEG 压缩与色度抽样
   if (o.lut) {
     q.set('lut', o.lut)
     q.set('strength', o.strength !== undefined ? o.strength : 100)
@@ -611,6 +632,43 @@ app.baseFrameUrl = () => {
   return '/api/base_frame?' + q.toString()
 }
 
+// 校准地址：同一帧交给服务端跑完整 ffmpeg 链路（1280 宽 PNG）
+app.calibrationUrl = () => {
+  if (!app.currentPath) return ''
+  return app.thumbUrl({
+    lut: app.activeLutPath() || undefined,
+    strength: app.lutStrength,
+    w: 1280, png: true, full: true,
+  })
+}
+
+// 作废在途 / 排队中的校准请求
+app.cancelCalibration = () => {
+  clearTimeout(app.calibTimer)
+  app.calibTimer = null
+  app.calibToken += 1
+}
+
+// 松手后（240ms 无新参数）请求一次服务端结果；拖动过程中 0 请求
+app.scheduleCalibration = () => {
+  app.cancelCalibration()
+  if (!app.clientLut || !app.currentPath || app.playUrl || app.compare) return
+  if (!app.activeLutPath() && !app.hasGrading) return
+  const token = app.calibToken
+  app.calibTimer = setTimeout(() => {
+    if (token !== app.calibToken || app.playUrl || app.compare) return
+    const url = app.calibrationUrl()
+    if (!url) return
+    const img = new Image()
+    img.onload = () => {
+      if (token !== app.calibToken || !app.clientLut || app.compare || app.playUrl) return
+      app.mainThumbUrl = url
+      app.clientCalibrated = true
+    }
+    img.src = url
+  }, 240)
+}
+
 // 预览图预加载：新图解码完成后再替换，避免每次调参白屏闪一下
 app.preloadThumb = (url) => {
   if (!url) return
@@ -640,12 +698,15 @@ app.endThumbLoading = () => {
 
 app.setCurrentThumb = () => {
   const lut = app.activeLutPath()
-  app.previewingLut = !!lut
   if (app.clientLut) {
-    // 切 LUT 不再请求服务端：同一张基底帧 + 着色器重绘
-    app.mainThumbUrl = app.baseFrameUrl()
+    // 浏览器实时渲染：立即回到基底帧 + 着色器，随后用服务端结果校准替换
+    app.previewingLut = !!(lut || app.hasGrading)
+    app.clientCalibrated = false
+    if (!app.playUrl) app.mainThumbUrl = app.baseFrameUrl()
+    app.scheduleCalibration()
     return
   }
+  app.previewingLut = !!lut
   // 拖动中与松手都渲染同一尺寸，避免过程中清晰度跳变
   app.preloadThumb(lut
     ? app.thumbUrl({ lut, strength: app.lutStrength, w: 560, full: true })
@@ -655,24 +716,30 @@ app.setCurrentThumb = () => {
 app.setOriginalThumb = () => {
   if (!app.currentPath) return
   app.previewingLut = false
-  if (app.clientLut) return  // 同一张基底帧，仅停用着色器
+  if (app.clientLut) {
+    // 同一张基底帧，仅停用着色器；校准画面要换回未调色的基底帧
+    app.cancelCalibration()
+    app.clientCalibrated = false
+    if (!app.playUrl) app.mainThumbUrl = app.baseFrameUrl()
+    return
+  }
   app.preloadThumb(app.thumbUrl({ w: 560 }))
 }
 
 app.refreshPreview = (immediate) => {
   if (!app.currentPath) return
   if (app.clientLut) {
-    // LUT-only：画面由浏览器实时叠加，播放中调 LUT 也不必重新渲染
+    // 拖动中只在本地重绘：不请求服务端，松手后再做一次校准替换
     clearTimeout(app.thumbTimer)
     if (app.playServerGraded) app.stopPlay()
     if (app.playUrl && app.playClipPath && app.playClipPath !== app.currentPath) app.stopPlay()
-    const url = app.baseFrameUrl()
-    if (url && url !== app.mainThumbUrl) {
-      app.thumbLoading = true
-      app.mainThumbUrl = url
-    }
-    if (app.compare) app.setOriginalThumb()
-    else app.previewingLut = !!app.activeLutPath()
+    app.clientCalibrated = false
+    if (app.compare) { app.setOriginalThumb(); return }
+    app.previewingLut = !!(app.activeLutPath() || app.hasGrading)
+    if (app.playUrl) return  // 播放中直接用视频帧，画布持续重绘
+    const base = app.baseFrameUrl()
+    if (base && app.mainThumbUrl !== base) app.mainThumbUrl = base
+    app.scheduleCalibration()
     return
   }
   app.stopPlay()
@@ -935,6 +1002,8 @@ app.onLutUploadError = () => { ElMessage.error('LUT 上传失败，仅支持 .cu
 // ---------- 播放 ----------
 app.playGraded = async () => {
   if (!app.currentPath) return
+  app.cancelCalibration()
+  app.clientCalibrated = false
   if (app.clientLut) {
     // 只有 LUT：直接播原片 / 代理，LUT 由浏览器着色器实时叠加，无需服务端渲染
     await app.playOriginal(true)
@@ -1010,8 +1079,9 @@ app.playOriginal = async (keepLut) => {
     if (d.error) { ElMessage.error(d.error); return }
     app.playTime = 0
     app.playDuration = 0
-    // keepLut=true 表示由浏览器实时套 LUT（LUT-only 播放），否则播原片
-    app.previewingLut = keepLut === true && !!app.activeLutPath()
+    // keepLut=true 表示由浏览器实时套 LUT（LUT-only / 一级调色播放），否则播原片
+    app.previewingLut = keepLut === true && !!(app.activeLutPath() || app.hasGrading)
+    app.clientCalibrated = false
     app.previewLow = false
     app.playServerGraded = false
     app.pendingSeek = 0

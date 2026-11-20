@@ -2,8 +2,9 @@
 import { inject, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { LutRenderer } from '../lib/webglLut'
 import { loadCube } from '../lib/cubeLut'
+import { buildGradeModel, curveTextureData } from '../lib/gradeLut'
 
-// 覆盖在 video / img 上的 WebGL 画布：只做 LUT，不参与调色与蒙版
+// 覆盖在 video / img 上的 WebGL 画布：一级调色子集 + LUT，蒙版仍由服务端渲染
 const app = inject('app')
 const cv = ref(null)
 const box = ref({ display: 'none' })
@@ -20,8 +21,15 @@ const slots = [
 ]
 
 function enabled() {
-  // 服务端已渲染好的调色片段不能再叠一次 LUT
-  return app.clientLut && app.previewingLut && !app.playServerGraded
+  // 服务端已渲染好的调色片段 / 已校准的画面都不能再叠一层着色器
+  return app.clientShade
+}
+
+// 调色参数 → 着色器 uniform + 曲线表（与 ffmpeg 逐项对齐）
+function syncGrade() {
+  if (!renderer) return
+  const model = app.hasGrading ? buildGradeModel(app.grading) : null
+  renderer.setGrade(model, model ? curveTextureData(model) : null)
 }
 
 // 画布与媒体元素同框（offset* 不受缩放影响），再套同一份缩放变换
@@ -135,13 +143,18 @@ onMounted(() => {
     app.webglOk = false
     return
   }
+  syncGrade()
   bind()
 })
 
 watch(() => app.mediaEl, bind)
-watch(() => [app.playUrl, app.mainThumbUrl, app.previewingLut, app.zoom.scale], kick)
+watch(() => [app.playUrl, app.mainThumbUrl, app.previewingLut, app.clientShade, app.zoom.scale], kick)
 watch(() => [app.lutPath, app.customLut, app.lutStrength,
              app.lut2Path, app.lutStrength2, app.useSecondLut], kick)
+watch(() => app.grading, () => {
+  syncGrade()
+  kick()
+}, { deep: true })
 
 onBeforeUnmount(() => {
   disposed = true

@@ -1511,7 +1511,9 @@ def thumb():
     first = str(request.args.get('first') or '').lower() in ('1', 'true', 'yes')
     s1 = max(0, min(100, int(request.args.get('strength', 100))))
     s2 = max(0, min(100, int(request.args.get('strength2', 100))))
-    w = max(160, min(720, int(request.args.get('w', 320))))
+    # 浏览器端着色器的校准结果用 PNG：1280 宽且无色度抽样 / JPEG 压缩损失
+    png = str(request.args.get('png') or '').lower() in ('1', 'true', 'yes')
+    w = max(160, min(1280 if png else 720, int(request.args.get('w', 320))))
     if lut and not os.path.isfile(lut):
         return jsonify({"error": "LUT 不存在"}), 404
     if lut2 and not os.path.isfile(lut2):
@@ -1534,16 +1536,17 @@ def thumb():
 
     key = _cache_key('thumb', video, _file_mtime(video), lut, _file_mtime(lut),
                      lut2, _file_mtime(lut2), s1, s2, w, size, first,
+                     'png' if png else 'jpg',
                      json.dumps(grading, sort_keys=True),
                      json.dumps(masks, sort_keys=True) if layers else '')
-    out = os.path.join(THUMB_CACHE_DIR, key + ".jpg")
+    out = os.path.join(THUMB_CACHE_DIR, key + (".png" if png else ".jpg"))
     if not os.path.isfile(out):
         stages = []
         if lut:
             stages.append((lut, s1))
         if lut2:
             stages.append((lut2, s2))
-        graph = build_filter_graph(stages, 'gbrp', 'yuvj420p',
+        graph = build_filter_graph(stages, 'gbrp', 'rgb24' if png else 'yuvj420p',
                                    size=size, grading=grading, mask_layers=layers)
         seek = 0.0
         if size:
@@ -1562,8 +1565,12 @@ def thumb():
         for layer in layers:
             # 蒙版为静态图，限制读取时长，避免源画面无帧时无限循环
             cmd += ["-loop", "1", "-framerate", "1", "-t", f"{seek + 5:.1f}", "-i", layer["png"]]
-        cmd += ["-filter_complex", graph, "-map", "[vo]",
-                "-frames:v", "1", "-q:v", "4", out]
+        cmd += ["-filter_complex", graph, "-map", "[vo]", "-frames:v", "1"]
+        if png:
+            cmd += ["-pix_fmt", "rgb24"]
+        else:
+            cmd += ["-q:v", "4"]
+        cmd.append(out)
         with thumb_sem:
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True,
@@ -1573,7 +1580,7 @@ def thumb():
         if r.returncode != 0 or not os.path.isfile(out):
             tail = "\n".join((r.stderr or '').strip().splitlines()[-5:])
             return jsonify({"error": "缩略图生成失败：" + tail[-400:]}), 500
-    return send_file(out, mimetype='image/jpeg', conditional=True)
+    return send_file(out, mimetype='image/png' if png else 'image/jpeg', conditional=True)
 
 
 @app.route('/api/preview_graded', methods=['POST'])
