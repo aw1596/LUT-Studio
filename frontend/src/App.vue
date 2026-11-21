@@ -859,7 +859,6 @@ app.scanDir = async () => {
       ElMessage.success(`扫描完成，共 ${d.files.length} 个视频`)
       app.refreshProxyStates()
     }
-    localStorage.setItem('osmo.lastDir', dir)
   } finally {
     app.scanning = false
     nextTick(app.updateBinNav)
@@ -1362,12 +1361,9 @@ watch(() => app.compare, (v) => {
 provide('app', app)
 
 onMounted(() => {
-  const last = localStorage.getItem('osmo.lastDir')
-  if (last) app.inputDir = last
   app.loadLuts()
   app.loadGpuStatus()
   app.poll()
-  if (last) app.scanDir()
   window.addEventListener('resize', app.updateMaskBox)
   window.addEventListener('resize', app.updateBinNav)
   window.addEventListener('dragover', app.onWindowDragOver)
