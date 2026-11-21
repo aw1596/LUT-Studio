@@ -186,7 +186,7 @@ const app = reactive({
 
 // ---------- computed ----------
 app.currentClip = computed(() => app.files.find(f => f.path === app.currentPath) || null)
-app.tabTitle = computed(() => ({ media: '素材', filter: '滤镜', color: '调色', export: '导出', tasks: '任务' }[app.tab]))
+app.tabTitle = computed(() => ({ media: '素材', filter: 'LUT', color: '调色', export: '导出', tasks: '任务' }[app.tab]))
 const isLinearCurve = (pts) => (pts || []).every(p => Math.abs(p.x - p.y) < 0.005)
 // 任意一组调色参数是否偏离中性（全局与每个蒙版共用）
 const gradingUsed = (g) => {
@@ -251,8 +251,8 @@ app.logStyleLuts = computed(() => app.luts.filter(l => l.kind === 'log'))
 app.creativeLuts = computed(() => app.luts.filter(l => l.kind === 'creative'))
 app.lutLabel = computed(() => {
   const l = app.luts.find(x => x.path === app.lutPath)
-  if (!l) return '未选择滤镜'
-  let label = `滤镜：${l.name} · ${app.lutStrength}%`
+  if (!l) return '未选择 LUT'
+  let label = `LUT：${l.name} · ${app.lutStrength}%`
   const l2 = app.luts.find(x => x.path === app.lut2Path)
   if (app.useSecondLut && l2) label += ` + ${l2.name} · ${app.lutStrength2}%`
   return label
@@ -264,6 +264,13 @@ app.canStart = computed(() => app.sel.length > 0 && (app.customLut || app.lutPat
   (app.outputMode !== 'custom' || app.customDir))
 app.batchesReversed = computed(() => [...app.batches].reverse())
 app.hasRunning = computed(() => app.batches.some(b => b.status === 'running'))
+// 是否存在可暂停 / 已暂停的条目（用于队列顶部的全部操作按钮）
+app.taskActive = (it) => it.status === 'pending' || it.status === 'converting'
+app.taskPaused = (it) => !!it.paused && app.taskActive(it)
+app.hasActive = computed(() =>
+  app.batches.some(b => b.items.some(i => app.taskActive(i) && !i.paused)))
+app.hasPaused = computed(() =>
+  app.batches.some(b => b.items.some(i => app.taskPaused(i))))
 app.showThumb = computed(() => !app.playUrl && !!app.mainThumbUrl)
 
 // ---------- 工具方法 ----------
@@ -1245,21 +1252,70 @@ app.poll = async () => {
   } catch (e) { /* 忽略 */ }
 }
 
-app.stopAll = async () => {
+// ---------- 任务条目操作：暂停 / 继续 / 取消 / 删除 ----------
+const taskPost = async (b, it, action) => {
+  try {
+    const r = await fetch(`/api/tasks/${b.id}/${it.id}/${action}`, { method: 'POST' })
+    const d = await r.json()
+    if (d.error) { ElMessage.error(d.error); return false }
+    return true
+  } catch (e) {
+    ElMessage.error('操作失败')
+    return false
+  }
+}
+
+app.togglePause = async (b, it) => {
+  const action = app.taskPaused(it) ? 'resume' : 'pause'
+  if (await taskPost(b, it, action)) app.poll()
+}
+
+app.cancelItem = async (b, it) => {
   try {
     await ElMessageBox.confirm(
-      '将终止正在转换的文件并清空等待队列，未完成的半成品会被删除（已完成的保留）。',
-      '暂停全部导出',
-      { confirmButtonText: '暂停全部', cancelButtonText: '取消', type: 'warning' }
+      '将终止该文件的转换，并删除未完成的输出。',
+      '取消任务',
+      { confirmButtonText: '取消任务', cancelButtonText: '返回', type: 'warning' }
     )
   } catch (e) { return }
-  await fetch('/api/stop_all', { method: 'POST' })
-  ElMessage.info('已暂停全部导出')
+  if (await taskPost(b, it, 'cancel')) app.poll()
+}
+
+app.deleteItem = async (b, it) => {
+  try {
+    const r = await fetch(`/api/tasks/${b.id}/${it.id}`, { method: 'DELETE' })
+    const d = await r.json()
+    if (d.error) { ElMessage.error(d.error); return }
+    app.poll()
+  } catch (e) {
+    ElMessage.error('删除失败')
+  }
+}
+
+// 勾选的条目批量删除：pairs 为 [{ b, it }]
+app.deleteItems = async (pairs) => {
+  for (const { b, it } of pairs) {
+    try {
+      await fetch(`/api/tasks/${b.id}/${it.id}`, { method: 'DELETE' })
+    } catch (e) { /* 单条失败不阻塞其余条目 */ }
+  }
+  app.poll()
+}
+
+app.pauseAll = async () => {
+  await fetch('/api/pause_all', { method: 'POST' })
+  app.poll()
+}
+
+app.resumeAll = async () => {
+  await fetch('/api/resume_all', { method: 'POST' })
   app.poll()
 }
 
 app.tagType = (s) => ({ pending: 'info', converting: 'warning', done: 'success', error: 'danger', skipped: 'info', cancelled: 'info' }[s] || 'info')
 app.statusText = (s) => ({ pending: '等待', converting: '转换中', done: '完成', error: '失败', skipped: '已存在', cancelled: '已取消' }[s] || s)
+app.taskStatusText = (it) => app.taskPaused(it) ? '已暂停' : app.statusText(it.status)
+app.taskTagType = (it) => app.taskPaused(it) ? 'warning' : app.tagType(it.status)
 app.progStatus = (s) => s === 'done' ? 'success' : (s === 'error' ? 'exception' : undefined)
 
 // ---------- watchers ----------

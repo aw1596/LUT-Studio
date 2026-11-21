@@ -10,7 +10,7 @@ const app = inject('app')
       <i class="ico">▤</i><span>素材</span>
     </div>
     <div class="rail-item" :class="{ active: app.tab === 'filter' }" @click="app.tab = 'filter'">
-      <i class="ico">◐</i><span>滤镜</span>
+      <i class="ico">◐</i><span>LUT</span>
       <span class="rail-dot" v-if="app.lutPath"></span>
     </div>
     <div class="rail-item" :class="{ active: app.tab === 'color' }" @click="app.tab = 'color'">

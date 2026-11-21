@@ -39,9 +39,9 @@ def to_ffmpeg_lut_path(path):
     return ffmpeg_path
 
 def download_dji_lut_if_needed():
+    from lut_studio.config import RESTORE_LUTS_DIR
     lut_filename = "DJI DLogM To Rec.709.cube"
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    lut_dir = os.path.join(base_dir, "luts", "restore")  # 与网页端「灰片还原」目录一致
+    lut_dir = RESTORE_LUTS_DIR  # 与网页端「灰片还原」目录一致（打包后为 exe 旁的 luts/restore）
     os.makedirs(lut_dir, exist_ok=True)
     lut_path = os.path.join(lut_dir, lut_filename)
 

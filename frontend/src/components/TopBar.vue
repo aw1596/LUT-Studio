@@ -26,7 +26,7 @@ const onExport = () => {
                 @click="app.setRenderGpu(false)">CPU</button>
       </span>
     </div>
-    <el-button v-if="app.hasRunning" type="danger" plain size="small" @click="app.stopAll">暂停全部</el-button>
+    <el-button v-if="app.hasActive" type="danger" plain size="small" @click="app.pauseAll">暂停全部</el-button>
     <!-- 不在导出页时始终可点（点了先跳转到导出选项）；已在导出页才按条件禁用 -->
     <el-button type="primary" class="export-btn" :disabled="app.tab === 'export' && !app.canStart" @click="onExport">
       导出{{ app.sel.length ? `（${app.sel.length}）` : '' }}
