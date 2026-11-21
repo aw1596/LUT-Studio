@@ -27,10 +27,12 @@ LUT Studio 把 Log 视频还原为 Rec.709，并对普通视频做 **3D LUT 批�
 - 桌面端布局：左侧功能栏、中央预览台、右侧属性面板、底部素材胶片条；面板宽度 / 胶片条高度可拖动调整
 - 预览缩放：滚轮以光标为中心缩放（1×–8×），放大后可拖动平移，双击复位
 - 五个面板：素材 / LUT / 调色 / 导出 / 任务
-- 素材扫描：填写文件夹即可列出视频（缩略图、时长、大小），支持全选 / 清空；路径可点「选择…」调用系统文件夹对话框
+- 素材导入：点「选择…」可一次多选，只导入选中的文件；也可填写文件夹路径批量导入该目录视频（缩略图、时长、大小），支持全选 / 清空
 - 素材导入：把视频拖进窗口任意位置，或复制文件后在页面按 Ctrl+V 粘贴，即可加入素材列表（文件会复制到项目 `_imports/`，支持多文件与同名自动编号）
 - 胶片条：左右箭头 + 滚轮横向滚动
 - LUT 画廊分三组：Log 还原 LUT（一级）、Log 转风格化 LUT（一级）、个性化 LUT（二级叠加）
+- **每个素材独立 LUT**：切换胶片条素材时 LUT 面板显示该素材自己的配置，改动互不影响；面板顶部可「应用到全部」
+- 胶片条每个素材显示当前套用的 LUT 名称（无 LUT 显示「原片」）
 - 每张 LUT 卡片实时渲染「当前素材套用该 LUT 后」的画面（服务端渲染并缓存）
 - 还原强度 / 二级强度各 0–100%，两级独立
 - **一级调色**：色温、色调、曝光、对比度、高光、阴影、白色、黑色、饱和度、自然饱和度、锐化
@@ -83,24 +85,27 @@ python server.py
 
 使用流程：
 
-1. 「素材」里填写视频文件夹路径（如 `E:\DCIM\DJI_001`），点击扫描
+1. 「素材」里点「选择…」多选要导入的视频（只导入选中的文件）；也可填写文件夹路径按回车批量导入
 2. 在底部胶片条勾选要处理的视频（默认全选）
-3. 「LUT」里选择 LUT 并调整强度；需要时启用二级 LUT
+3. 「LUT」里为当前素材选择 LUT 并调整强度（每个素材各自保存，需要统一时点「应用到全部」）
 4. 「调色」里调色温 / 曝光 / 对比等，或拖色轮、拉曲线、调 HSL / 分离色调 / 校准；需要局部调色时新建蒙版，绘制后点「确认」加入列表，再对每个蒙版单独调色
 5. 「导出」里选择输出位置、分辨率、色深、编码器，点击「开始导出」
 6. 「任务」里查看每个文件的进度与错误，可逐条暂停 / 继续 / 取消 / 删除
 
 ### 免环境便携包
 
-仓库的 `release/` 不入库（已加入 `.gitignore`）。如需分发给没有 Python / Node 的电脑，可用 PyInstaller 打包（Windows）：
+仓库的 `release/` 不入库（已加入 `.gitignore`）。如需分发给没有 Python / Node 的电脑，用 PyInstaller 打包（Windows）。打包配置已固化在 `lut_studio.spec`（`console=False`，无控制台黑框）：
 
 ```bash
 cd frontend && npm run build && cd ..
 python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --onedir --console --name "LUT Studio" --add-data "web;web" --collect-all uvicorn --collect-all fastapi --collect-all starlette --hidden-import multipart --hidden-import python_multipart server.py
+python -m PyInstaller lut_studio.spec --noconfirm
 ```
 
-打包后把 `luts/` 和 `ffmpeg.exe` / `ffprobe.exe`（放在 `bin/`）复制到 exe 同级目录即可。程序会优先使用自带 ffmpeg，双击后自动打开浏览器；关闭控制台窗口即退出。
+打包后把 `luts/` 和 `ffmpeg.exe` / `ffprobe.exe`（放在 `bin/`）复制到 exe 同级目录即可。程序会优先使用自带 ffmpeg，双击后自动打开浏览器。
+
+- **无黑框**：打包后不再弹出控制台窗口；运行日志写入 `%LOCALAPPDATA%\LUT Studio\logs\app.log`，出问题可查看该文件。
+- **退出程序**：界面右上角点「退出」按钮即可（无控制台可关）。
 
 ### 前端开发与构建
 
@@ -193,16 +198,16 @@ LUT-Studio/
 | --- | --- | --- |
 | GET | `/` | 单页界面 |
 | GET | `/api/gpu_status` | NVENC 是否可用及原因 |
-| GET | `/api/list_videos?dir=` | 列出目录内视频 |
+| GET | `/api/list_videos?dir=` | 列出目录内视频（文件多选后首次调用只返回选中的文件） |
 | POST | `/api/import_files` | 拖拽 / 粘贴导入：接收 multipart `files`，复制到 `_imports/` 并返回素材信息 |
 | GET | `/api/luts` | LUT 列表（含 `kind`: `restore` / `log` / `creative`） |
 | POST | `/api/upload_lut` | 上传 `.cube` 到 `luts/creative/` |
 | POST | `/api/preview/ensure` | 获取可播放预览地址（HEVC 走 720p 代理） |
 | GET | `/api/preview_file?path=` | 支持 Range 的视频流 |
 | GET | `/api/thumb` | 单帧缩略图，支持 `lut` / `lut2` / `strength` / `grading` / `masks` |
-| POST | `/api/pick_dir` | 原生文件 / 文件夹选择框（`{title, initial, mode}`，`mode=file` 返回文件所在目录） |
+| POST | `/api/pick_dir` | 原生文件 / 文件夹选择框（`{title, initial, mode}`；`mode=file` 支持多选，只导入选中的文件） |
 | POST | `/api/preview_graded` | 生成 8 秒 720p 调色预览片段 |
-| POST | `/api/convert` | 提交批量转换，返回 `batch_id` |
+| POST | `/api/convert` | 提交批量转换，返回 `batch_id`；`files` 支持每个文件带自己的 LUT |
 | GET | `/api/batches` | 所有批次与逐文件状态 |
 | POST | `/api/pause_all` | 暂停全部：挂起转换中的进程，排队条目暂停启动 |
 | POST | `/api/resume_all` | 继续全部暂停中的条目 |
@@ -214,6 +219,8 @@ LUT-Studio/
 | GET | `/api/write_test?path=` | 诊断：测试服务进程对指定路径的写权限 |
 
 `grading` 与 `masks` 既可传 JSON 字符串（`/api/thumb` 的 query），也可直接传对象（POST body）。单蒙版的旧参数 `mask` 仍然兼容。
+
+`/api/convert` 的 `files` 推荐用对象数组：`[{ "path": "...", "lut_path": "...", "lut_path2": "...", "lut_strength": 80, "lut_strength2": 100, "lut_label": "...", "graded": false }]`，每个文件按自己的 LUT 渲染；旧的纯字符串数组仍兼容（沿用请求顶层的全局 LUT 字段）。
 
 `grading` 字段：
 
@@ -310,7 +317,7 @@ Repository: <https://github.com/aw1596/LUT-Studio>
 - Desktop layout: left tool rail, center preview stage, right inspector, bottom filmstrip; resizable inspector width and filmstrip height
 - Preview zoom: wheel zooms around the cursor (1×–8×), drag to pan, double-click to reset
 - Five panels: Media / LUT / Color / Export / Tasks
-- Media scanning: point at a folder, clips are listed with thumbnail, duration and size; select all / clear; native folder picker
+- Media import: pick one or more files in the native multi-select dialog (only selected files are imported), or batch-import a folder; thumbnails, duration and size are listed, with select all / clear
 - Media import: drop videos anywhere in the window, or copy files and press Ctrl+V — they are copied into `_imports/` and added to the list (multi-file, auto-numbered on name clashes)
 - Filmstrip navigation: arrow buttons plus horizontal wheel scrolling
 - LUT gallery in three groups: Log restoration LUTs (primary), Log-to-look LUTs (primary), creative LUTs (secondary stack)
@@ -366,7 +373,7 @@ Open <http://127.0.0.1:5000> (port 5000 by default, automatically moving to the 
 
 Workflow:
 
-1. In **Media**, enter a folder (e.g. `E:\DCIM\DJI_001`) and click Scan
+1. In **Media**, click **Select…** to pick one or more clips (only selected files are imported), or enter a folder to batch-import it
 2. Select clips in the filmstrip (all selected by default)
 3. In **LUT**, pick a LUT and adjust strength; enable a second LUT if needed
 4. In **Color**, tune temperature / exposure / contrast, drag the wheels, shape curves, or adjust HSL / split toning / calibration. For local grading, draw a mask, hit **Confirm** to add it, then grade each mask separately
@@ -474,16 +481,16 @@ At runtime the app creates `_thumb_cache/`, `_base_cache/`, `_mask_cache/`, `_gr
 | --- | --- | --- |
 | GET | `/` | Single-page UI |
 | GET | `/api/gpu_status` | Whether NVENC is usable, and why not |
-| GET | `/api/list_videos?dir=` | List videos in a folder |
+| GET | `/api/list_videos?dir=` | List videos in a folder (after a multi-file pick it returns only the chosen files) |
 | POST | `/api/import_files` | Drag / paste import: accepts multipart `files`, copies into `_imports/` and returns clip metadata |
 | GET | `/api/luts` | LUT list with `kind`: `restore` / `log` / `creative` |
 | POST | `/api/upload_lut` | Upload a `.cube` into `luts/creative/` |
 | POST | `/api/preview/ensure` | Playable preview URL (HEVC gets a 720p proxy) |
 | GET | `/api/preview_file?path=` | Range-capable video stream |
 | GET | `/api/thumb` | Single-frame thumbnail; accepts `lut` / `lut2` / `strength` / `grading` / `masks` |
-| POST | `/api/pick_dir` | Native file / folder picker (`{title, initial, mode}`; `mode=file` returns the file's folder) |
+| POST | `/api/pick_dir` | Native file / folder picker (`{title, initial, mode}`; `mode=file` supports multi-select and imports only the chosen files) |
 | POST | `/api/preview_graded` | Render an 8-second 720p graded preview |
-| POST | `/api/convert` | Submit a batch, returns `batch_id` |
+| POST | `/api/convert` | Submit a batch, returns `batch_id`; `files` may carry per-file LUT settings |
 | GET | `/api/batches` | All batches and per-file status |
 | POST | `/api/pause_all` | Pause all: suspend running processes and hold queued items |
 | POST | `/api/resume_all` | Resume all paused items |
@@ -495,6 +502,8 @@ At runtime the app creates `_thumb_cache/`, `_base_cache/`, `_mask_cache/`, `_gr
 | GET | `/api/write_test?path=` | Diagnostics: test write access from the server process |
 
 `grading` and `masks` can be JSON strings (query params for `/api/thumb`) or plain objects (POST body). The legacy single-mask `mask` parameter is still accepted.
+
+`/api/convert` accepts an object array for `files`: `[{ "path": "...", "lut_path": "...", "lut_path2": "...", "lut_strength": 80, "lut_strength2": 100, "lut_label": "...", "graded": false }]`, so each file renders with its own LUT. The old plain string array is still accepted and falls back to the top-level LUT fields.
 
 `grading` fields:
 

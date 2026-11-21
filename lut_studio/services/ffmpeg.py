@@ -4,7 +4,7 @@ import json
 import subprocess
 
 from .. import state
-from ..utils import _file_mtime
+from ..utils import CREATE_NO_WINDOW, _file_mtime
 
 # MP4 容器能直接封装的音频编码；DJI 等机型常见 PCM，直接 copy 会让 MP4 打不开
 MP4_AUDIO_OK = {"aac", "mp3", "ac3", "eac3", "alac"}
@@ -17,7 +17,7 @@ def check_nvenc():
             ["ffmpeg", "-hide_banner", "-loglevel", "error",
              "-f", "lavfi", "-i", "testsrc=duration=0.1:size=640x360:rate=30",
              "-c:v", "h264_nvenc", "-f", "null", "-"],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30, creationflags=CREATE_NO_WINDOW)
         if r.returncode == 0:
             state.NVENC_OK, state.NVENC_MSG = True, ""
         else:
@@ -34,7 +34,7 @@ def get_video_duration(path):
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, check=True)
+            capture_output=True, text=True, check=True, creationflags=CREATE_NO_WINDOW)
         return float(result.stdout.strip())
     except Exception:
         return None
@@ -47,7 +47,7 @@ def get_video_codec(path):
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=codec_name",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, check=True)
+            capture_output=True, text=True, check=True, creationflags=CREATE_NO_WINDOW)
         return result.stdout.strip().lower()
     except Exception:
         return ""
@@ -60,7 +60,7 @@ def get_audio_codec(path):
             ["ffprobe", "-v", "error", "-select_streams", "a:0",
              "-show_entries", "stream=codec_name",
              "-of", "default=noprint_wrappers=1:nokey=1", path],
-            capture_output=True, text=True, check=True)
+            capture_output=True, text=True, check=True, creationflags=CREATE_NO_WINDOW)
         return result.stdout.strip().lower()
     except Exception:
         return ""
@@ -89,7 +89,8 @@ def probe_video(path):
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height,avg_frame_rate,codec_name,pix_fmt",
              "-show_entries", "format=duration", "-of", "json", path],
-            capture_output=True, text=True, encoding='utf-8', errors='replace')
+            capture_output=True, text=True, encoding='utf-8', errors='replace',
+            creationflags=CREATE_NO_WINDOW)
         d = json.loads(r.stdout or "{}")
         st = (d.get("streams") or [{}])[0]
         info["width"] = int(st.get("width") or 0)

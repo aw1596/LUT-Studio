@@ -15,7 +15,7 @@ from ..services.ffmpeg import get_video_duration
 from ..services.proxy import (ensure_proxy, needs_proxy, proxy_state,
                               proxy_target, warm_proxies)
 from ..services.render import render_thumb
-from ..utils import HttpError
+from ..utils import CREATE_NO_WINDOW, HttpError
 
 router = APIRouter()
 
@@ -28,6 +28,24 @@ def gpu_status(request: Request):
 @router.get('/api/list_videos')
 def list_videos(request: Request):
     directory = request.query_params.get('dir', '').strip().strip('"')
+    # 刚从文件多选框选完：只返回选中的文件，不扫描整个目录
+    with state.picked_lock:
+        picked = state.picked_selection
+        state.picked_selection = None
+    if picked and os.path.normcase(os.path.abspath(picked["dir"])) == \
+            os.path.normcase(os.path.abspath(directory)):
+        files = []
+        for full in picked["paths"]:
+            if not os.path.isfile(full):
+                continue
+            files.append({
+                "name": os.path.basename(full),
+                "path": full,
+                "size": os.path.getsize(full),
+                "duration": get_video_duration(full),
+            })
+        warm_proxies([f["path"] for f in files])
+        return JSONResponse({"files": files})
     if not os.path.isdir(directory):
         return JSONResponse({"error": "目录不存在"}, status_code=400)
     files = []
@@ -162,7 +180,7 @@ def proxy_ensure(data: dict = Body(None)):
 def pick_dir(data: dict = Body(None)):
     """弹出系统选择框（本工具为本地单机应用，选择框由服务端所在的桌面弹出）
 
-    mode=file：文件选择框，框内直接列出视频文件；返回所选文件所在目录
+    mode=file：文件选择框（支持多选），只导入选中的文件；返回首个文件所在目录
     mode=dir ：文件夹选择框
     """
     data = data or {}
@@ -173,7 +191,8 @@ def pick_dir(data: dict = Body(None)):
         initial = BASE_DIR
     if getattr(sys, 'frozen', False):
         # 打包后 sys.executable 是主程序本身：用 --pick-dialog 让它以子进程弹出选择框
-        cmd = [sys.executable, '--pick-dialog', mode or 'dir', title, initial]
+        dialog_mode = 'files' if mode == 'file' else 'dir'
+        cmd = [sys.executable, '--pick-dialog', dialog_mode, title, initial]
     elif mode == 'file':
         script = (
             "import tkinter as tk\n"
@@ -182,9 +201,9 @@ def pick_dir(data: dict = Body(None)):
             "root.withdraw()\n"
             "root.attributes('-topmost', True)\n"
             "root.update()\n"
-            "p = filedialog.askopenfilename(parent=root, title=%r, initialdir=%r, "
+            "picked = filedialog.askopenfilenames(parent=root, title=%r, initialdir=%r, "
             "filetypes=[('视频文件', '*.mp4 *.mov *.mkv *.avi *.mxf *.webm'), ('所有文件', '*.*')])\n"
-            "print(p or '')\n" % (title, initial)
+            "print('\\n'.join(picked))\n" % (title, initial)
         )
         cmd = [sys.executable, "-c", script]
     else:
@@ -202,13 +221,27 @@ def pick_dir(data: dict = Body(None)):
     try:
         env = dict(os.environ, PYTHONIOENCODING='utf-8')
         r = subprocess.run(cmd, capture_output=True, text=True, env=env,
-                           encoding='utf-8', errors='replace', timeout=600)
+                           encoding='utf-8', errors='replace', timeout=600,
+                           creationflags=CREATE_NO_WINDOW)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
-    lines = [l for l in (r.stdout or '').splitlines() if l.strip()]
-    path = lines[-1].strip() if lines else ''
-    if path and mode == 'file':
-        path = os.path.dirname(path)
+    lines = [l.strip() for l in (r.stdout or '').splitlines() if l.strip()]
+    if lines and lines[0].startswith('ERROR:'):
+        return JSONResponse({"error": lines[0]}, status_code=500)
+    if mode == 'file':
+        picked = [p for p in lines if os.path.isfile(p) and p.lower().endswith(VIDEO_EXTS)]
+        with state.picked_lock:
+            state.picked_selection = None
+        if not picked:
+            if lines:
+                return JSONResponse({"error": "仅支持 mp4 / mov / mkv / avi / mxf / webm 视频"}, status_code=400)
+            return JSONResponse({"path": ""})
+        # 前端只会拿到目录并立即扫描；扫描时由 picked_selection 提供选中的文件
+        directory = os.path.dirname(picked[0])
+        with state.picked_lock:
+            state.picked_selection = {"dir": directory, "paths": picked}
+        return JSONResponse({"path": directory})
+    path = lines[-1] if lines else ''
     return JSONResponse({"path": path})
 
 

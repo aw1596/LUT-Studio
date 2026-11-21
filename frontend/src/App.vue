@@ -100,14 +100,11 @@ const app = reactive({
   files: [],
   currentPath: '',
   sel: [],
+  gradeSel: [],   // 胶片条中勾选参与调色 / 导出的素材
   binNav: { left: false, right: false },
   luts: [],
-  lutPath: '',
-  lut2Path: '',
-  useSecondLut: false,
-  lutStrength: 100,
-  lutStrength2: 100,
-  customLut: '',
+  // 每个素材独立的 LUT 配置：path -> { lutPath, lut2Path, useSecondLut, lutStrength, lutStrength2, customLut }
+  clipLuts: {},
   outputMode: 'subfolder',
   customDir: '',
   resolution: 'original',
@@ -184,6 +181,32 @@ const app = reactive({
   binStrip: null,
 })
 
+// ---------- 每个素材独立的 LUT ----------
+// LUT 面板读写的是当前预览素材的那一份配置；切换素材时面板自动跟着切换。
+// 六个字段做成可写 computed：读取落当前素材，写入也只改当前素材。
+const LUT_FIELDS = ['lutPath', 'lut2Path', 'useSecondLut', 'lutStrength', 'lutStrength2', 'customLut']
+const LUT_DEFAULT = {
+  lutPath: '', lut2Path: '', useSecondLut: false,
+  lutStrength: 100, lutStrength2: 100, customLut: '',
+}
+const ensureLut = (path) => {
+  if (!path) return null
+  if (!app.clipLuts[path]) app.clipLuts[path] = { ...LUT_DEFAULT }
+  return app.clipLuts[path]
+}
+for (const key of LUT_FIELDS) {
+  app[key] = computed({
+    get: () => {
+      const e = app.currentPath ? app.clipLuts[app.currentPath] : null
+      return e ? e[key] : LUT_DEFAULT[key]
+    },
+    set: (v) => {
+      const e = ensureLut(app.currentPath)
+      if (e) e[key] = v
+    },
+  })
+}
+
 // ---------- computed ----------
 app.currentClip = computed(() => app.files.find(f => f.path === app.currentPath) || null)
 app.tabTitle = computed(() => ({ media: '素材', filter: 'LUT', color: '调色', export: '导出', tasks: '任务' }[app.tab]))
@@ -249,23 +272,34 @@ app.zoomStyle = computed(() => ({
 app.restoreLuts = computed(() => app.luts.filter(l => l.kind === 'restore'))
 app.logStyleLuts = computed(() => app.luts.filter(l => l.kind === 'log'))
 app.creativeLuts = computed(() => app.luts.filter(l => l.kind === 'creative'))
-app.lutLabel = computed(() => {
-  const primary = app.primaryLutPath()
-  const l = app.luts.find(x => x.path === primary)
-  const l2 = app.luts.find(x => x.path === app.lut2Path)
-  if (primary && l) {
-    let label = `LUT：${l.name} · ${app.lutStrength}%`
-    if (app.secondLutPath() && l2) label += ` + ${l2.name} · ${app.lutStrength2}%`
-    return label
-  }
-  // 没有还原 LUT 时，个性化 LUT 可以直接单独使用
-  if (!primary && app.useSecondLut && l2) return `LUT：${l2.name} · ${app.lutStrength2}%`
-  return '未选择 LUT'
-})
+// LUT 名称：优先取 /api/luts 里的名称，自定义路径回退文件名
+const lutNameOf = (path) => {
+  if (!path) return ''
+  const l = app.luts.find(x => x.path === path)
+  if (l) return l.name
+  return path.split(/[\\/]/).pop().replace(/\.cube$/i, '')
+}
+// 某个素材当前套用的 LUT 文案（含强度与二级叠加）
+app.lutLabelFor = (path) => {
+  const p = app.lutParamsFor(path)
+  if (!p.lut) return '未选择 LUT'
+  let label = `LUT：${lutNameOf(p.lut)} · ${p.strength}%`
+  if (p.lut2) label += ` + ${lutNameOf(p.lut2)} · ${p.strength2}%`
+  return label
+}
+// 胶片条上的简称：没有 LUT 时显示“原片”
+app.lutShortName = (path) => {
+  const p = app.lutParamsFor(path)
+  if (!p.lut) return '原片'
+  const name = lutNameOf(p.lut)
+  return p.lut2 ? `${name} + ${lutNameOf(p.lut2)}` : name
+}
+app.lutLabel = computed(() => app.lutLabelFor(app.currentPath))
 app.resolutionText = computed(() => ({ original: '原始分辨率', '1080p': '1080p', '720p': '720p' }[app.resolution]))
 app.canPreview = computed(() => !!(app.activeLutPath() || app.hasAdjust))
-app.canStart = computed(() => app.sel.length > 0 && (app.activeLutPath() || app.hasAdjust) &&
-  (!app.useSecondLut || app.lut2Path) &&
+// 整批导出条件：至少一个素材有改动（自身 LUT 或全局调色 / 蒙版）
+app.canStart = computed(() => app.gradeSel.length > 0 &&
+  (app.hasAdjust || app.gradeSel.some(p => !!app.lutParamsFor(p).lut)) &&
   (app.outputMode !== 'custom' || app.customDir))
 app.batchesReversed = computed(() => [...app.batches].reverse())
 app.hasRunning = computed(() => app.batches.some(b => b.status === 'running'))
@@ -633,13 +667,38 @@ app.thumbUrl = (opts) => {
   return '/api/thumb?' + q.toString()
 }
 
-app.primaryLutPath = () => app.customLut || app.lutPath
-// 没有一级 LUT 时，个性化 LUT 直接作为唯一 LUT 使用（Rec.709 素材无需先还原）
-app.activeLutPath = () => app.primaryLutPath() ||
-  (app.useSecondLut && app.lut2Path ? app.lut2Path : '')
-app.activeLutStrength = () => (app.primaryLutPath() ? app.lutStrength : app.lutStrength2)
-// 只有存在一级 LUT 时，个性化 LUT 才作为二级叠加
-app.secondLutPath = () => (app.primaryLutPath() && app.useSecondLut ? app.lut2Path : '')
+// 解析指定素材的 LUT 参数：无一级 LUT 时个性化 LUT 作为唯一 LUT（Rec.709 可直接套风格），
+// 有一级 LUT 时个性化 LUT 才作为二级叠加。导出与标签共用一个来源，避免规则分叉。
+app.lutParamsFor = (path) => {
+  const l = app.clipLuts[path]
+  if (!l) return { lut: '', strength: 100, lut2: '', strength2: 100 }
+  const primary = l.customLut || l.lutPath || ''
+  const second = l.useSecondLut && l.lut2Path ? l.lut2Path : ''
+  return {
+    lut: primary || second,
+    strength: primary ? l.lutStrength : l.lutStrength2,
+    lut2: primary ? second : '',
+    strength2: l.lutStrength2,
+  }
+}
+app.primaryLutPath = () => {
+  const l = app.clipLuts[app.currentPath]
+  return (l && (l.customLut || l.lutPath)) || ''
+}
+app.activeLutPath = () => app.lutParamsFor(app.currentPath).lut
+app.activeLutStrength = () => app.lutParamsFor(app.currentPath).strength
+app.secondLutPath = () => app.lutParamsFor(app.currentPath).lut2
+// 该素材是否有导出意义：套了 LUT，或全局调色 / 蒙版非中性
+app.isClipModified = (path) => !!app.lutParamsFor(path).lut || app.hasAdjust
+// 把当前素材的 LUT 配置复制到胶片条已勾选素材（未勾选时作用于全部素材）
+app.applyLutToAll = () => {
+  if (!app.currentPath) return ElMessage.warning('请先选择一个素材')
+  const targets = (app.gradeSel.length ? app.gradeSel : app.sel).filter(p => p !== app.currentPath)
+  if (!targets.length) return ElMessage.warning('没有可应用的素材')
+  const src = app.clipLuts[app.currentPath] || LUT_DEFAULT
+  targets.forEach(p => { app.clipLuts[p] = { ...src } })
+  ElMessage.success(`已将当前 LUT 应用到 ${targets.length} 个素材`)
+}
 
 // 基底帧：不含 LUT / 调色的原画面，LUT 由浏览器 WebGL 实时叠加
 app.baseFrameUrl = () => {
@@ -866,6 +925,7 @@ app.scanDir = async () => {
     else {
       app.files = d.files
       app.sel = d.files.map(f => f.path)
+      app.gradeSel = [...app.sel]
       if (d.files.length) { app.currentPath = d.files[0].path; app.refreshPreview() }
       ElMessage.success(`扫描完成，共 ${d.files.length} 个视频`)
       app.refreshProxyStates()
@@ -913,6 +973,7 @@ app.importFiles = async (fileList, source) => {
       if (app.files.some(x => x.path === f.path)) return
       app.files.push(f)
       app.sel.push(f.path)
+      app.gradeSel.push(f.path)
       if (!first) first = f.path
     })
     if (!app.currentPath && first) app.currentPath = first
@@ -962,7 +1023,14 @@ app.onWindowPaste = (e) => {
 app.toggleClip = (f) => {
   app.currentPath = f.path
   const i = app.sel.indexOf(f.path)
-  if (i >= 0) app.sel.splice(i, 1); else app.sel.push(f.path)
+  if (i >= 0) {
+    app.sel.splice(i, 1)
+    const gi = app.gradeSel.indexOf(f.path)
+    if (gi >= 0) app.gradeSel.splice(gi, 1)
+  } else {
+    app.sel.push(f.path)
+    app.gradeSel.push(f.path)
+  }
   app.refreshPreview()
 }
 
@@ -972,7 +1040,50 @@ app.focusClip = (f) => {
   app.refreshPreview()
 }
 
-app.selectAll = () => { app.sel = app.files.map(f => f.path) }
+app.selectAll = () => {
+  app.sel = app.files.map(f => f.path)
+  app.gradeSel = [...app.sel]
+}
+// 右侧素材区：只清空“进入胶片条”的选择，不影响素材库文件
+app.clearSel = () => {
+  app.sel = []
+  app.gradeSel = []
+}
+// 胶片条：单独控制哪些素材参与调色 / 导出
+app.toggleGrade = (f) => {
+  if (!app.sel.includes(f.path)) return
+  const i = app.gradeSel.indexOf(f.path)
+  if (i >= 0) app.gradeSel.splice(i, 1); else app.gradeSel.push(f.path)
+}
+app.selectAllGrade = () => { app.gradeSel = [...app.sel] }
+app.clearGradeSel = () => { app.gradeSel = [] }
+// 从素材库移除选中的视频（仅移出列表，不删除磁盘文件）
+app.removeSelFiles = async () => {
+  if (!app.sel.length) return
+  try {
+    await ElMessageBox.confirm(
+      `将从素材库移除 ${app.sel.length} 个视频，不会删除磁盘上的原文件。`,
+      '删除选中素材',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch (e) {
+    return  // 取消：保留在素材库
+  }
+  const drop = new Set(app.sel)
+  app.files = app.files.filter(f => !drop.has(f.path))
+  drop.forEach(p => { delete app.clipLuts[p] })
+  app.sel = []
+  app.gradeSel = []
+  if (drop.has(app.currentPath)) {
+    app.stopPlay()
+    app.playUrl = ''
+    app.mainThumbUrl = ''
+    app.currentPath = app.files.length ? app.files[0].path : ''
+    if (app.currentPath) app.refreshPreview()
+  }
+  ElMessage.success(`已从素材库移除 ${drop.size} 个视频`)
+  nextTick(app.updateBinNav)
+}
 
 app.loadLuts = async () => {
   const r = await fetch('/api/luts')
@@ -1225,15 +1336,42 @@ app.skip = (sec) => {
 
 // ---------- 导出 / 任务 ----------
 app.start = async () => {
+  if (!app.gradeSel.length) return
+  // 未套 LUT 也没有调色 / 蒙版的素材导出后与原片一样，先提示并排除
+  const changed = app.gradeSel.filter(p => app.isClipModified(p))
+  const skipped = app.gradeSel.filter(p => !app.isClipModified(p))
+  if (!changed.length) return ElMessage.warning('所选素材都未套 LUT 或调色，没有可导出的内容')
+  if (skipped.length) {
+    const names = skipped.slice(0, 8).map(p => p.split(/[\\/]/).pop())
+    const extra = skipped.length > names.length ? `<div>等 ${skipped.length} 个素材</div>` : ''
+    const html = `<div>以下 ${skipped.length} 个视频未套 LUT 也没有调色，将不会被导出：</div>` +
+      `<div style="margin-top:6px;color:#8a8a96;line-height:1.7">${names.join('<br>')}</div>${extra}`
+    try {
+      await ElMessageBox.confirm(html, '部分素材未修改', {
+        dangerouslyUseHTMLString: true, type: 'warning',
+        confirmButtonText: '只导出已修改', cancelButtonText: '取消',
+      })
+    } catch (e) {
+      return  // 取消：保持原样
+    }
+  }
+  const files = changed.map(p => {
+    const lp = app.lutParamsFor(p)
+    return {
+      path: p,
+      lut_path: lp.lut,
+      lut_path2: lp.lut2,
+      lut_strength: lp.strength,
+      lut_strength2: lp.strength2,
+      lut_label: app.lutLabelFor(p),
+      graded: app.hasAdjust,
+    }
+  })
   const r = await fetch('/api/convert', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      files: app.sel,
-      lut_path: app.activeLutPath(),
-      lut_path2: app.secondLutPath(),
-      lut_strength: app.activeLutStrength(),
-      lut_strength2: app.lutStrength2,
+      files,
       output_mode: app.outputMode,
       custom_dir: app.customDir,
       resolution: app.resolution,
@@ -1336,8 +1474,9 @@ watch(() => app.currentPath, () => {
 })
 watch(() => app.files, () => nextTick(app.updateBinNav))
 watch(() => app.lutPath, (v, old) => {
-  // LUT 列表首次加载会赋值 lutPath，此时只刷新缩略图，避免打断正在播放的预览
-  if (!old && app.playUrl) { app.setCurrentThumb(); return }
+  // 同一素材内从“无 LUT”切到“有 LUT”且正在播放：只换缩略图，避免打断播放；
+  // 切换素材时 playClipPath 与 currentPath 不一致，仍走正常刷新（会停掉旧素材的播放）
+  if (!old && app.playUrl && app.playClipPath === app.currentPath) { app.setCurrentThumb(); return }
   app.refreshPreview()
 })
 watch(() => app.lutStrength, () => app.refreshPreview())
@@ -1368,6 +1507,14 @@ watch(() => app.compare, (v) => {
   if (v) app.setOriginalThumb()
   else app.setCurrentThumb()
 })
+
+app.quitApp = async () => {
+  try {
+    await ElMessageBox.confirm('确定要退出 LUT Studio 吗？', '退出', { type: 'warning' })
+  } catch { return }
+  try { await fetch('/api/shutdown', { method: 'POST' }) } catch {}
+  ElMessage.success('已退出，可关闭此页面')
+}
 
 provide('app', app)
 

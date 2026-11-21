@@ -23,14 +23,39 @@ from .services.ffmpeg import check_nvenc
 FROZEN = bool(getattr(sys, 'frozen', False))
 
 
-def _prepare_runtime():
-    """打包运行时：使用自带的 ffmpeg / ffprobe，并设置控制台标题"""
+def _user_log_dir():
+    """日志目录：打包后写到用户可写的 LOCALAPPDATA，避免无控制台时日志丢失"""
+    base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+    d = os.path.join(base, 'LUT Studio', 'logs')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _redirect_stdio_to_log():
+    """windowed（无控制台）打包后 sys.stdout / stderr 为 None；重定向到日志文件，
+    既保留 uvicorn / 业务日志便于排查，也避免向 None 写入报错。"""
     if not FROZEN:
         return
+    log_path = os.path.join(_user_log_dir(), 'app.log')
+    try:
+        if os.path.isfile(log_path) and os.path.getsize(log_path) > 2_000_000:
+            os.replace(log_path, log_path + '.old')
+    except OSError:
+        pass
+    f = open(log_path, 'a', encoding='utf-8')
+    sys.stdout = f
+    sys.stderr = f
+
+
+def _prepare_runtime():
+    """打包运行时：使用自带的 ffmpeg / ffprobe，并重定向日志到文件"""
+    if not FROZEN:
+        return
+    _redirect_stdio_to_log()
     bin_dir = os.path.join(BASE_DIR, 'bin')
     if os.path.isdir(bin_dir):
         os.environ['PATH'] = bin_dir + os.pathsep + os.environ.get('PATH', '')
-    os.system('title LUT Studio - 关闭此窗口即可退出')
+    # windowed 模式无控制台：os.system('title ...') 会闪一下 cmd 窗口，故不再设置
 
 
 def _pick_port(start=5000):
@@ -53,6 +78,15 @@ def create_app():
     for router in (material.router, lut.router, grading.router,
                    export.router, task.router):
         app.include_router(router)
+
+    @app.post('/api/shutdown')
+    def _shutdown():
+        """退出程序：windowed 打包无控制台可关，由前端「退出」按钮触发"""
+        import threading
+        # 延迟退出，让本响应先返回前端；本地单机应用直接结束进程即可
+        threading.Timer(0.5, lambda: os._exit(0)).start()
+        return {'ok': True}
+
     app.mount('/', StaticFiles(directory=WEB_DIR, html=True), name='web')
     return app
 

@@ -18,6 +18,8 @@ frontend/dist/
 
 # 本地打包产物（exe / ffmpeg / 压缩包，体积大，不入库）
 release/
+build/
+*.spec
 
 # IDE / 本地配置
 .idea/

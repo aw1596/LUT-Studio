@@ -9,6 +9,12 @@ const tab = ref('restore')
 
 <template>
   <div class="panel-body">
+    <div class="row lut-head">
+      <span class="hint" :title="app.currentClip ? app.currentClip.name : ''">
+        当前素材：{{ app.currentClip ? app.currentClip.name : '未选择' }}
+      </span>
+      <el-button size="small" text :disabled="!app.currentPath" @click="app.applyLutToAll">应用到全部</el-button>
+    </div>
     <div class="seg lut-seg">
       <button :class="{ on: tab === 'restore' }" @click="tab = 'restore'">Log 还原 LUT</button>
       <button :class="{ on: tab === 'logstyle' }" @click="tab = 'logstyle'">Log 转风格化（一级）</button>
@@ -92,6 +98,12 @@ const tab = ref('restore')
 </template>
 
 <style scoped>
+/* 当前素材 + 应用到全部 */
+.lut-head { justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.lut-head .hint {
+  margin: 0; min-width: 0; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 /* 二级菜单：三等分，长标签自动换行 */
 .lut-seg button {
   white-space: normal;

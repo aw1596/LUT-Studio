@@ -8,7 +8,7 @@ from helper import to_ffmpeg_lut_path
 
 from .. import state
 from ..config import BASE_CACHE_DIR, THUMB_CACHE_DIR
-from ..utils import HttpError, _cache_key, _file_mtime
+from ..utils import CREATE_NO_WINDOW, HttpError, _cache_key, _file_mtime
 from .ffmpeg import probe_video
 from .grading import grading_steps, parse_grading
 from .mask import (CROP_AREA_LIMIT, active_masks, ensure_mask_layers,
@@ -47,7 +47,8 @@ def ensure_base_frame(video, seek, size):
     with state.base_sem:
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
-                               encoding='utf-8', errors='replace', timeout=90)
+                               encoding='utf-8', errors='replace', timeout=90,
+                               creationflags=CREATE_NO_WINDOW)
         except subprocess.TimeoutExpired:
             raise RuntimeError("解码原片超时")
     if r.returncode != 0 or not os.path.isfile(tmp):
@@ -57,7 +58,7 @@ def ensure_base_frame(video, seek, size):
 
 
 def build_filter_graph(stages, fmt_in, fmt_out, size=None, grading=None, mask_layers=None,
-                       scale_flags='lanczos', fps_cap=None):
+                       scale_flags='lanczos', fps_cap=None, dither=False):
     """构建滤镜图：缩放 → 格式 → 全局调色/多级 LUT → 逐个蒙版叠加局部调色 → 输出格式。
 
     stages: [(LUT 路径, 强度)]，强度 0 跳过、100 全量、中间值用 blend 插值
@@ -133,7 +134,13 @@ def build_filter_graph(stages, fmt_in, fmt_out, size=None, grading=None, mask_la
 
     for f in post:
         cur = emit(f'[{cur}]', f)
-    parts.append(f'[{cur}]format={fmt_out}[vo]')
+    tail = f'format={fmt_out}'
+    if dither:
+        # 高位深内部处理后降到 8bit 输出时，加极轻微噪声打破色带（banding）：
+        # t=时间域、u=空间域，每帧自然变化；强度 2 个 8bit 灰阶，肉眼几乎不可见，
+        # 但能消除天空 / 肤色等平滑渐变的截断阶梯，主观画质反而提升。
+        tail += ',noise=alls=2:allf=t+u'
+    parts.append(f'[{cur}]{tail}[vo]')
     return ';'.join(parts)
 
 
@@ -161,7 +168,8 @@ def render_thumb(video, lut, lut2, first, s1, s2, png, w, raw):
     except RuntimeError as e:
         raise HttpError(str(e), 500)
 
-    key = _cache_key('thumb', video, _file_mtime(video), lut, _file_mtime(lut),
+    # int10b_v1：调色链内部精度升级到 10bit，旧的 8bit 缩略图缓存需失效重建
+    key = _cache_key('thumb', 'int10b_v1', video, _file_mtime(video), lut, _file_mtime(lut),
                      lut2, _file_mtime(lut2), s1, s2, w, size, first,
                      'png' if png else 'jpg',
                      json.dumps(grading, sort_keys=True),
@@ -173,7 +181,9 @@ def render_thumb(video, lut, lut2, first, s1, s2, png, w, raw):
             stages.append((lut, s1))
         if lut2:
             stages.append((lut2, s2))
-        graph = build_filter_graph(stages, 'gbrp', 'rgb24' if png else 'yuvj420p',
+        # 缩略图调色链也用 10bit 内部处理，保证预览色彩与最终导出一致（所见即所得）；
+        # 静态缩略图不加抖动（dither 默认 False），保持画面干净与缓存稳定
+        graph = build_filter_graph(stages, 'gbrp10le', 'rgb24' if png else 'yuvj420p',
                                    size=size, grading=grading, mask_layers=layers)
         seek = 0.0
         if size:
@@ -201,7 +211,8 @@ def render_thumb(video, lut, lut2, first, s1, s2, png, w, raw):
         with state.thumb_sem:
             try:
                 r = subprocess.run(cmd, capture_output=True, text=True,
-                                   encoding='utf-8', errors='replace', timeout=90)
+                                   encoding='utf-8', errors='replace', timeout=90,
+                                   creationflags=CREATE_NO_WINDOW)
             except subprocess.TimeoutExpired:
                 raise HttpError("缩略图生成超时（90 秒）", 500)
         if r.returncode != 0 or not os.path.isfile(out):

@@ -28,12 +28,19 @@ def run(argv):
     root.withdraw()
     root.attributes('-topmost', True)
     root.update()
-    if mode == 'file':
+    if mode == 'files':
+        picked = filedialog.askopenfilenames(
+            parent=root, title=title, initialdir=initial,
+            filetypes=[('视频文件', '*.mp4 *.mov *.mkv *.avi *.mxf *.webm'), ('所有文件', '*.*')])
+    elif mode == 'file':
         picked = filedialog.askopenfilename(
             parent=root, title=title, initialdir=initial,
             filetypes=[('视频文件', '*.mp4 *.mov *.mkv *.avi *.mxf *.webm'), ('所有文件', '*.*')])
     else:
         picked = filedialog.askdirectory(parent=root, title=title, initialdir=initial)
     root.destroy()
-    print(picked or '')
+    if isinstance(picked, (tuple, list)):
+        print('\n'.join(picked))
+    else:
+        print(picked or '')
     return 0

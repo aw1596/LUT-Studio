@@ -1,7 +1,10 @@
 import os
 import subprocess
+import sys
 import json
 import urllib.request
+
+CREATE_NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
 
 def clear_console():
     os.system('cls' if os.name == 'nt' else 'clear')
@@ -31,7 +34,7 @@ def run_ffmpeg(input_path, output_path, lut_path):
             output_path
         ]
 
-    subprocess.run(command, check=True)
+    subprocess.run(command, check=True, creationflags=CREATE_NO_WINDOW)
 
 def to_ffmpeg_lut_path(path):
     drive, rest = os.path.splitdrive(path)
@@ -69,7 +72,7 @@ def get_video_fps(video_path):
             "-show_entries", "stream=r_frame_rate",
             "-of", "json",
             video_path
-        ], capture_output=True, text=True, check=True)
+        ], capture_output=True, text=True, check=True, creationflags=CREATE_NO_WINDOW)
 
         data = json.loads(result.stdout)
         fps_str = data["streams"][0]["r_frame_rate"]

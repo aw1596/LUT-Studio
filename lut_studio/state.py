@@ -15,6 +15,9 @@ active_lock = threading.Lock()
 stop_event = threading.Event()    # 置位后所有任务停止
 current_procs = {}                # 正在运行的 ffmpeg 进程：input_path -> Popen
 procs_lock = threading.Lock()
+# 文件多选框选中的素材：下一次 list_videos 只返回这些文件（消费后清空）
+picked_selection = None
+picked_lock = threading.Lock()
 
 # 并发闸门：避免多个 4K 解码抢资源；调色交互用的单帧渲染单独排队
 gen_sem = threading.Semaphore(2)

@@ -6,7 +6,7 @@ import subprocess
 
 from .. import state
 from ..config import PREVIEW_CACHE_DIR
-from ..utils import HttpError, _cache_key, _file_mtime
+from ..utils import CREATE_NO_WINDOW, HttpError, _cache_key, _file_mtime
 from .ffmpeg import _pixel_rate, probe_video
 from .mask import ensure_mask_layers
 from .proxy import ensure_proxy, ready_proxy
@@ -48,7 +48,8 @@ def preview_graded(data):
             ensure_mask_layers(layers, size[0], size[1])
     except RuntimeError as e:
         raise HttpError(str(e), 500)
-    key = _cache_key('graded', video, _file_mtime(video), lut, _file_mtime(lut),
+    # int10b_v1：调色链内部精度升级到 10bit，旧的预览片段缓存需失效重建
+    key = _cache_key('graded', 'int10b_v1', video, _file_mtime(video), lut, _file_mtime(lut),
                      lut2, _file_mtime(lut2), s1, s2, size, fps_cap,
                      json.dumps(grading, sort_keys=True),
                      json.dumps(masks, sort_keys=True) if layers else '')
@@ -59,9 +60,11 @@ def preview_graded(data):
             stages.append((lut, s1))
         if lut2:
             stages.append((lut2, s2))
-        graph = build_filter_graph(stages, 'gbrp', 'yuv420p',
+        # 预览片段与导出共用同一套高精度管线：10bit 内部处理 + 降 8bit 时抖动，
+        # 保证预览画面与最终导出一致（所见即所得）
+        graph = build_filter_graph(stages, 'gbrp10le', 'yuv420p',
                                    size=size, grading=grading, mask_layers=layers,
-                                   scale_flags='lanczos', fps_cap=fps_cap)
+                                   scale_flags='lanczos', fps_cap=fps_cap, dither=True)
         mask_inputs = []
         for layer in layers:
             # 预览最长 8 秒，蒙版读取上限 20 秒即可，避免源无帧时死循环
@@ -69,7 +72,11 @@ def preview_graded(data):
                             "-i", layer["png"]]
         body = ["-t", "8",
                 "-filter_complex", graph, "-map", "[vo]", "-map", "0:a?", "-g", "15",
-                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "96k",
+                "-pix_fmt", "yuv420p",
+                "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+                # 预览总是 H.264；用 bsf 把 bt709 写进码流 VUI，避免浏览器误判色彩
+                "-bsf:v", "h264_metadata=colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1",
+                "-c:a", "aac", "-b:a", "96k",
                 "-movflags", "+faststart", out]
         # 4K / 高帧率素材单靠 CPU 解码就要十几秒，用 NVDEC 硬解能省掉大半；
         # 1080p 及以下解码本身就快，硬解的显存拷贝反而拖慢，因此按像素率判断
@@ -98,7 +105,8 @@ def preview_graded(data):
                 else:
                     cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22"]
             return subprocess.run(cmd + body, capture_output=True, text=True,
-                                  encoding='utf-8', errors='replace', timeout=300)
+                                  encoding='utf-8', errors='replace', timeout=300,
+                                  creationflags=CREATE_NO_WINDOW)
 
         # 用户在主界面选择的渲染方式：GPU（硬解+NVENC）或纯 CPU；
         # 选 GPU 但驱动不可用时仍会回退 CPU，保证没有显卡的设备也能正常预览

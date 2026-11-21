@@ -42,7 +42,7 @@ const app = inject('app')
     <div class="hint" v-if="app.gpuChecked && !app.gpuOk">{{ app.gpuMsg }}</div>
 
     <div class="group-title">本次导出</div>
-    <div class="hint">已选 {{ app.sel.length }} 个素材 · {{ app.lutLabel }} · {{ app.resolutionText }}</div>
+    <div class="hint">胶片条中已选 {{ app.gradeSel.length }} 个素材 · 每个素材独立 LUT · {{ app.resolutionText }}</div>
     <el-button type="primary" class="mt" style="width:100%" :disabled="!app.canStart" @click="app.start">
       开始导出
     </el-button>

@@ -29,8 +29,9 @@ const onExport = () => {
     <el-button v-if="app.hasActive" type="danger" plain size="small" @click="app.pauseAll">暂停全部</el-button>
     <!-- 不在导出页时始终可点（点了先跳转到导出选项）；已在导出页才按条件禁用 -->
     <el-button type="primary" class="export-btn" :disabled="app.tab === 'export' && !app.canStart" @click="onExport">
-      导出{{ app.sel.length ? `（${app.sel.length}）` : '' }}
+      导出{{ app.gradeSel.length ? `（${app.gradeSel.length}）` : '' }}
     </el-button>
+    <el-button type="danger" plain size="small" @click="app.quitApp">退出</el-button>
   </header>
 </template>
 

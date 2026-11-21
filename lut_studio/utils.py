@@ -2,6 +2,11 @@
 
 import hashlib
 import os
+import sys
+
+# Windows 下让子进程（ffmpeg / ffprobe / python 对话框）不弹控制台黑框；
+# 非 Windows 平台为 0，传了也无副作用，保证跨平台安全。
+CREATE_NO_WINDOW = 0x08000000 if sys.platform == 'win32' else 0
 
 
 class HttpError(Exception):

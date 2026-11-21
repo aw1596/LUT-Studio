@@ -59,6 +59,9 @@ const removeSelected = async () => {
           <span class="task-name">{{ it.name }}</span>
           <el-tag size="small" :type="app.taskTagType(it)">{{ app.taskStatusText(it) }}</el-tag>
         </div>
+        <div class="task-lut" v-if="it.lut_label || it.graded">
+          {{ it.lut_label || '无 LUT' }}{{ it.graded ? ' · 已调色' : '' }}
+        </div>
         <el-progress :percentage="Math.floor(it.progress)" :status="app.progStatus(it.status)"
                      :stroke-width="6" style="margin-top:6px"></el-progress>
         <div class="error-box" v-if="it.error">{{ it.error }}</div>
@@ -74,3 +77,10 @@ const removeSelected = async () => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.task-lut {
+  margin-top: 4px; font-size: 11px; color: #7c7c88;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+</style>

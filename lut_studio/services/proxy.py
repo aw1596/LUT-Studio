@@ -12,6 +12,7 @@ import threading
 
 from .. import state
 from ..config import PROXY_CACHE_DIR
+from ..utils import CREATE_NO_WINDOW
 from .ffmpeg import probe_video
 
 PROXY_VERSION = 2  # 改变代理生成方式时递增，使旧缓存失效
@@ -187,7 +188,8 @@ def _make_proxy(src, out, job):
                   "-c:a", "aac", "-b:a", "96k", "-ac", "2",
                   "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", tmp])
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, encoding='utf-8', errors='replace', bufsize=1)
+                                text=True, encoding='utf-8', errors='replace', bufsize=1,
+                                creationflags=CREATE_NO_WINDOW)
         lines = []
         for line in proc.stdout:
             lines.append(line)
