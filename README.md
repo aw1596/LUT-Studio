@@ -16,7 +16,7 @@
 
 ## 中文
 
-LUT Studio 把 Log 视频还原为 Rec.709，并对普通视频做 **3D LUT 批量调色 + 一级调色 + 蒙版局部调色**。它提供一个桌面端风格的网页界面（深色主题、预览台、素材胶片条、导出队列）和一套命令行入口，内置 53 个 LUT（Log 还原、Log 直转风格化、Rec.709 风格 LUT）。
+LUT Studio 把 Log 视频还原为 Rec.709，并对普通视频做 **3D LUT 批量调色 + 一级调色 + 蒙版局部调色**。它提供一个桌面端风格的网页界面（深色主题、预览台、素材胶片条、导出队列）和一套命令行入口，内置 54 个 LUT（Log 还原、Log 直转风格化、Rec.709 风格 LUT），支持 DJI、Apple、ViVO、O-Log 与小米 Mi Log 还原。
 
 技术栈：Python + FastAPI + Uvicorn + FFmpeg；前端为 Vue 3 + Vite（Element Plus），构建产物由 FastAPI 静态托管。
 
@@ -52,7 +52,9 @@ LUT Studio 把 Log 视频还原为 Rec.709，并对普通视频做 **3D LUT 批�
 **处理管线**
 
 - 调色在 LUT **之前**生效，锐化在 LUT **之后**，便于「先还原、再风格化」
-- 10bit 走 `gbrp10le` 平面 RGB 管线，输出 `yuv420p10le`（HEVC + `hvc1`）
+- 内部统一使用 `gbrp10le` 10bit 平面 RGB 管线，即使输出 8bit 也以 10bit 精度完成调色、曲线与 LUT 运算，减少多次 8bit 量化造成的色带；10bit 输出为 `yuv420p10le`（HEVC + `hvc1`）
+- 10bit 内部管线降到 8bit 输出时加入轻微时域 + 空域抖动，抑制天空、肤色等平滑渐变的色带
+- 预览与导出写入完整 Rec.709 色彩元数据，并通过 `h264_metadata` / `hevc_metadata` 同步写入码流，避免播放器误判色彩
 - 蒙版以 `split` + `alphamerge` + `overlay` 在平面 RGB 空间混合；多层按列表顺序叠加，每层独立调色链；几何蒙版由 `geq` 生成，画笔 / 钢笔由 numpy 栅格化为 PGM，按键值缓存
 - 曲线、区域调整、分离色调、高光 / 阴影 / 白色 / 黑色用 `curves`；HSL 与自然饱和度合并生成 25³ 3D LUT 交给 `lut3d`；校准用 `colorchannelmixer`
 - LUT 强度通过「原图 + 调色结果」透明度 blend 实现，100% 时无额外开销
@@ -94,18 +96,20 @@ python server.py
 
 ### 免环境便携包
 
-仓库的 `release/` 不入库（已加入 `.gitignore`）。如需分发给没有 Python / Node 的电脑，用 PyInstaller 打包（Windows）。打包配置已固化在 `lut_studio.spec`（`console=False`，无控制台黑框）：
+仓库的 `release/`、`build/`、`dist/` 与打包产物均不入库。如需分发给没有 Python / Node 的电脑，可用 PyInstaller 构建 Windows 便携版（以下命令不依赖本地 spec 文件）：
 
 ```bash
 cd frontend && npm run build && cd ..
 python -m pip install pyinstaller
-python -m PyInstaller lut_studio.spec --noconfirm
+python -m PyInstaller --noconfirm --onedir --windowed --name "LUT Studio" --add-data "web;web" --collect-all uvicorn --collect-all fastapi --collect-all starlette --hidden-import multipart --hidden-import python_multipart server.py
 ```
 
-打包后把 `luts/` 和 `ffmpeg.exe` / `ffprobe.exe`（放在 `bin/`）复制到 exe 同级目录即可。程序会优先使用自带 ffmpeg，双击后自动打开浏览器。
+构建完成后，把整个 `luts/` 复制到 `dist/LUT Studio/luts/`，并把 `ffmpeg.exe`、`ffprobe.exe` 放进 `dist/LUT Studio/bin/`。**分发时要压缩整个 `dist/LUT Studio/` 文件夹，不能只发送 exe**；朋友解压后双击 `LUT Studio.exe` 即可运行，无需安装 Python、Node 或 FFmpeg。
 
-- **无黑框**：打包后不再弹出控制台窗口；运行日志写入 `%LOCALAPPDATA%\LUT Studio\logs\app.log`，出问题可查看该文件。
-- **退出程序**：界面右上角点「退出」按钮即可（无控制台可关）。
+- **LUT 不嵌入 exe**：程序读取 exe 同级的 `luts/restore/`、`luts/log_style/`、`luts/creative/`，以后增删 LUT 不必重新打包。
+- **优先使用自带 FFmpeg**：便携目录的 `bin/` 会加入 `PATH`，不依赖朋友电脑的全局环境。
+- **无黑框**：`--windowed` 不显示控制台；运行日志写入 `%LOCALAPPDATA%\LUT Studio\logs\app.log`。
+- **退出程序**：点击界面右上角「退出」，无需关闭控制台。
 
 ### 前端开发与构建
 
@@ -125,7 +129,7 @@ npm run build       # 打包到 ../web，之后刷新 http://127.0.0.1:5000
 
 页面按目录自动分组，刷新即可显示新增文件，无需改代码或重启。
 
-**Log 还原 LUT（一级）** — `luts/restore/`，仓库内置 9 个：
+**Log 还原 LUT（一级）** — `luts/restore/`，仓库内置 10 个：
 
 | 文件 | 页面显示 |
 | --- | --- |
@@ -138,6 +142,7 @@ npm run build       # 打包到 ../web，之后刷新 http://127.0.0.1:5000
 | `ViVO Log To Rec.709.cube` | ViVO Log → Rec.709 |
 | `O Log To Rec.709.cube` | O-Log → Rec.709 |
 | `O Log2 To Rec709.cube` | O-Log 2 → Rec.709 |
+| `Mi Log To Rec.709.cube` | Mi Log To Rec.709 |
 
 **Log 转 风格化 LUT（一级）** — `luts/log_style/`，以 Log 素材为输入，一次完成还原 + 风格化（输出 Rec.709），选中后无需再叠加还原 LUT。仓库内置 23 个：
 
@@ -153,7 +158,7 @@ npm run build       # 打包到 ../web，之后刷新 http://127.0.0.1:5000
 
 补充说明：
 
-- 页面按文件名展示；`luts/restore/` 里上述 9 个还原 LUT 都有中文显示名，其余显示原始文件名
+- 页面默认按文件名展示；部分还原 LUT 配置了更易读的映射名称，Mi Log 当前直接显示为 `Mi Log To Rec.709`
 - 个性化 LUT 缩略图显示「当前还原 LUT + 该风格 LUT」的组合效果
 - 带 `Log -` 前缀的 LUT 以 Log 素材为输入（统一放在 `luts/log_style/`）；`creative/` 里的同名 LUT 以 Rec.709 素材为输入。套用 Log 风格化 LUT 后无需再加还原 LUT；已还原的画面叠加风格 LUT 时请选 `creative/` 版本
 
@@ -217,6 +222,7 @@ LUT-Studio/
 | DELETE | `/api/tasks/{batch_id}/{item_id}` | 从队列删除条目（运行中会先终止） |
 | POST | `/api/stop_all` | 取消全部转换：终止进程，剩余条目标记为已取消 |
 | GET | `/api/write_test?path=` | 诊断：测试服务进程对指定路径的写权限 |
+| POST | `/api/shutdown` | 退出程序（便携版右上角「退出」按钮调用） |
 
 `grading` 与 `masks` 既可传 JSON 字符串（`/api/thumb` 的 query），也可直接传对象（POST body）。单蒙版的旧参数 `mask` 仍然兼容。
 
@@ -287,7 +293,7 @@ python main.py
 ### 使用建议
 
 - 大批量只做 Log 还原、不需要逐条细调时，直接用命令行版本（`python main.py`）更省事
-- 顺序：先「D-Log-M → Rec.709」全量还原，再从 `creative/` 套用风格 LUT 并降低强度（如 30–50%）
+- 顺序：先按相机选择对应的 Log 还原 LUT（DJI / Apple / Mi Log 等），再从 `creative/` 套用风格 LUT 并降低强度（如 30–50%）
 - Log 素材也可以直接用 `log_style/` 的 LUT，一步完成还原 + 风格化
 - `creative/` 里的 LUT 面向 **Rec.709 输入**，直接套在 Log 原片上色彩会失真
 - 10bit 素材建议保持 10bit 输出（HEVC），避免色深损失
@@ -297,14 +303,14 @@ python main.py
 
 MIT License
 
-- 官方 LUT：DJI（Pocket 3 / 4 / 4P）、Apple、ViVO、O-Log
+- Log 还原覆盖：DJI（Pocket 3 / 4 / 4P）、Apple、ViVO、O-Log、小米 Mi Log
 - 视频处理：[FFmpeg](https://ffmpeg.org)
 
 ---
 
 ## English
 
-LUT Studio restores Log footage to Rec.709 and **batch-grades videos with 3D LUTs, Lightroom-style primary grading, color wheels, curves and multi-layer masks**. It ships a desktop-style web UI (dark theme, preview stage, media filmstrip, export queue) plus a CLI, and bundles 53 LUTs (Log restoration, Log-to-look, and Rec.709 look LUTs).
+LUT Studio restores Log footage to Rec.709 and **batch-grades videos with 3D LUTs, Lightroom-style primary grading, color wheels, curves and multi-layer masks**. It ships a desktop-style web UI (dark theme, preview stage, media filmstrip, export queue) plus a CLI, and bundles 54 LUTs (Log restoration, Log-to-look, and Rec.709 look LUTs), including DJI, Apple, ViVO, O-Log and Xiaomi Mi Log restoration.
 
 Stack: Python + FastAPI + Uvicorn + FFmpeg; the frontend is a Vue 3 + Vite (Element Plus) project whose build output is served by FastAPI.
 
@@ -340,7 +346,9 @@ Repository: <https://github.com/aw1596/LUT-Studio>
 **Processing pipeline**
 
 - Grading runs **before** the LUT; sharpening runs **after** it
-- 10bit uses a planar-RGB `gbrp10le` pipeline and outputs `yuv420p10le` (HEVC + `hvc1`)
+- All grading runs internally in 10bit planar RGB (`gbrp10le`), even for 8bit output, reducing banding from repeated 8bit quantization; 10bit output uses `yuv420p10le` (HEVC + `hvc1`)
+- Subtle temporal + spatial dither is applied when reducing the 10bit internal pipeline to 8bit output, suppressing banding in skies, skin tones and other smooth gradients
+- Preview and export write complete Rec.709 color metadata, mirrored into the bitstream with `h264_metadata` / `hevc_metadata` so players do not misinterpret colors
 - Masks blend in planar RGB with `split` + `alphamerge` + `overlay`; geometric mattes come from `geq`, brush / pen mattes are rasterized with numpy into PGM, both cached by parameter hash. Masks stack in list order, each with its own chain
 - Curves, curve regions, split toning, highlights / shadows / whites / blacks use `curves`; HSL and vibrance are compiled into one 25³ 3D LUT; calibration uses `colorchannelmixer`
 - LUT strength blends with the original; 100% adds no overhead
@@ -382,15 +390,20 @@ Workflow:
 
 ### Portable build (no Python needed)
 
-`release/` is not tracked (ignored by `.gitignore`). To hand the app to a machine without Python / Node, build a Windows bundle with PyInstaller:
+`release/`, `build/`, `dist/` and packaged artifacts are not tracked. To hand the app to a machine without Python / Node, build a Windows bundle with PyInstaller (no local spec file required):
 
 ```bash
 cd frontend && npm run build && cd ..
 python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --onedir --console --name "LUT Studio" --add-data "web;web" --collect-all uvicorn --collect-all fastapi --collect-all starlette --hidden-import multipart --hidden-import python_multipart server.py
+python -m PyInstaller --noconfirm --onedir --windowed --name "LUT Studio" --add-data "web;web" --collect-all uvicorn --collect-all fastapi --collect-all starlette --hidden-import multipart --hidden-import python_multipart server.py
 ```
 
-After building, copy `luts/` and `ffmpeg.exe` / `ffprobe.exe` (into `bin/`) next to the exe. The app prefers the bundled ffmpeg, opens the browser on launch, and exits when the console window is closed.
+After building, copy the whole `luts/` directory to `dist/LUT Studio/luts/`, and place `ffmpeg.exe` and `ffprobe.exe` in `dist/LUT Studio/bin/`. **Zip and distribute the entire `dist/LUT Studio/` folder, not just the exe**. Recipients only need to extract it and double-click `LUT Studio.exe`; no Python, Node or FFmpeg installation is required.
+
+- **LUTs stay outside the exe**: the app reads `luts/restore/`, `luts/log_style/` and `luts/creative/` next to the executable, so LUTs can be changed without rebuilding.
+- **Bundled FFmpeg takes priority**: the portable `bin/` directory is prepended to `PATH`, independent of the recipient's global environment.
+- **No console window**: `--windowed` hides it; logs go to `%LOCALAPPDATA%\LUT Studio\logs\app.log`.
+- **Exit**: use the **Exit** button in the top-right corner of the UI.
 
 ### Frontend dev & build
 
@@ -408,7 +421,7 @@ npm run build       # bundles into ../web
 
 Directories drive the groups; new files show up after a page refresh, no code change or restart needed.
 
-**Restoration LUTs (primary)** — `luts/restore/`, 9 bundled:
+**Restoration LUTs (primary)** — `luts/restore/`, 10 bundled:
 
 | File | Display name |
 | --- | --- |
@@ -421,6 +434,7 @@ Directories drive the groups; new files show up after a page refresh, no code ch
 | `ViVO Log To Rec.709.cube` | ViVO Log → Rec.709 |
 | `O Log To Rec.709.cube` | O-Log → Rec.709 |
 | `O Log2 To Rec709.cube` | O-Log 2 → Rec.709 |
+| `Mi Log To Rec.709.cube` | Mi Log To Rec.709 |
 
 **Log-to-look LUTs (primary)** — `luts/log_style/`; they take Log input and output Rec.709 + the look in one step, so no separate restoration LUT is needed. 23 bundled:
 
@@ -436,7 +450,7 @@ Directories drive the groups; new files show up after a page refresh, no code ch
 
 Notes:
 
-- Cards are labelled from filenames; the nine restoration LUTs above have Chinese display names, everything else uses the raw stem
+- Cards use filenames by default; selected restoration LUTs have friendlier display-name mappings, while Mi Log currently appears as `Mi Log To Rec.709`
 - Creative thumbnails preview "current restoration LUT + that look LUT"
 - LUTs prefixed `Log -` expect Log input (all kept in `luts/log_style/`); same-named LUTs in `creative/` expect Rec.709 input. A Log-to-look LUT needs no separate restoration LUT; when stacking a look on already-restored footage, pick the `creative/` version
 
@@ -500,6 +514,7 @@ At runtime the app creates `_thumb_cache/`, `_base_cache/`, `_mask_cache/`, `_gr
 | DELETE | `/api/tasks/{batch_id}/{item_id}` | Remove an item from the queue (terminates it first if running) |
 | POST | `/api/stop_all` | Cancel everything: kill processes and mark the rest cancelled |
 | GET | `/api/write_test?path=` | Diagnostics: test write access from the server process |
+| POST | `/api/shutdown` | Exit the application (used by the portable UI's Exit button) |
 
 `grading` and `masks` can be JSON strings (query params for `/api/thumb`) or plain objects (POST body). The legacy single-mask `mask` parameter is still accepted.
 
@@ -570,7 +585,7 @@ On first run the official DJI D-Log-M → Rec.709 LUT is downloaded into `luts/r
 ### Recommended workflow
 
 - Bulk log-restoration only? Run the CLI (`python main.py`) instead
-- Chain order: «D-Log-M → Rec.709» at full strength first, then a look LUT from `creative/` at reduced strength (e.g. 30–50%)
+- Chain order: choose the restoration LUT matching the camera (DJI / Apple / Mi Log etc.) at full strength, then a look LUT from `creative/` at reduced strength (e.g. 30–50%)
 - Log footage can also use a `log_style/` LUT directly to do restoration + look in one step
 - LUTs in `creative/` expect **Rec.709 input**; applying them to Log footage shifts colors incorrectly
 - Keep 10bit footage at 10bit (HEVC) output to avoid losing color depth
@@ -580,5 +595,5 @@ On first run the official DJI D-Log-M → Rec.709 LUT is downloaded into `luts/r
 
 MIT License
 
-- Official LUTs: DJI (Pocket 3 / 4 / 4P), Apple, ViVO, O-Log
+- Log restoration: DJI (Pocket 3 / 4 / 4P), Apple, ViVO, O-Log, Xiaomi Mi Log
 - Video processing: [FFmpeg](https://ffmpeg.org)
