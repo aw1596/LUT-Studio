@@ -68,9 +68,15 @@ const tab = ref('restore')
           <div class="label">{{ l.name }}</div>
         </div>
       </div>
-      <div class="strength-row mt"><span>二级强度</span><b>{{ app.lutStrength2 }}%</b></div>
+      <div class="strength-row mt">
+        <span>{{ app.primaryLutPath() ? '二级强度' : '风格强度' }}</span>
+        <b>{{ app.lutStrength2 }}%</b>
+      </div>
       <el-slider v-model="app.lutStrength2" :min="0" :max="100" :step="5" :disabled="!app.useSecondLut || !app.lut2Path"></el-slider>
-      <div class="hint">在还原结果上叠加风格 LUT；缩略图显示的是「当前还原 LUT + 该风格 LUT」的组合效果。</div>
+      <div class="hint">
+        Rec.709 素材无需还原 LUT，可直接套用这里的风格 LUT；已选 Log 还原 LUT 时则叠加在其结果上。
+        缩略图显示最终组合效果。
+      </div>
     </template>
 
     <!-- 通用：上传 / 自定义路径（三个模块共用） -->

@@ -250,16 +250,21 @@ app.restoreLuts = computed(() => app.luts.filter(l => l.kind === 'restore'))
 app.logStyleLuts = computed(() => app.luts.filter(l => l.kind === 'log'))
 app.creativeLuts = computed(() => app.luts.filter(l => l.kind === 'creative'))
 app.lutLabel = computed(() => {
-  const l = app.luts.find(x => x.path === app.lutPath)
-  if (!l) return '未选择 LUT'
-  let label = `LUT：${l.name} · ${app.lutStrength}%`
+  const primary = app.primaryLutPath()
+  const l = app.luts.find(x => x.path === primary)
   const l2 = app.luts.find(x => x.path === app.lut2Path)
-  if (app.useSecondLut && l2) label += ` + ${l2.name} · ${app.lutStrength2}%`
-  return label
+  if (primary && l) {
+    let label = `LUT：${l.name} · ${app.lutStrength}%`
+    if (app.secondLutPath() && l2) label += ` + ${l2.name} · ${app.lutStrength2}%`
+    return label
+  }
+  // 没有还原 LUT 时，个性化 LUT 可以直接单独使用
+  if (!primary && app.useSecondLut && l2) return `LUT：${l2.name} · ${app.lutStrength2}%`
+  return '未选择 LUT'
 })
 app.resolutionText = computed(() => ({ original: '原始分辨率', '1080p': '1080p', '720p': '720p' }[app.resolution]))
 app.canPreview = computed(() => !!(app.activeLutPath() || app.hasAdjust))
-app.canStart = computed(() => app.sel.length > 0 && (app.customLut || app.lutPath || app.hasAdjust) &&
+app.canStart = computed(() => app.sel.length > 0 && (app.activeLutPath() || app.hasAdjust) &&
   (!app.useSecondLut || app.lut2Path) &&
   (app.outputMode !== 'custom' || app.customDir))
 app.batchesReversed = computed(() => [...app.batches].reverse())
@@ -615,8 +620,8 @@ app.thumbUrl = (opts) => {
       // 卡片预览时直接指定叠加的个性化 LUT，不依赖当前是否已启用二级调色
       q.set('lut2', o.lut2)
       q.set('strength2', o.strength2 !== undefined ? o.strength2 : 100)
-    } else if (!o.noSecond && app.useSecondLut && app.lut2Path) {
-      q.set('lut2', app.lut2Path)
+    } else if (!o.noSecond && app.secondLutPath()) {
+      q.set('lut2', app.secondLutPath())
       q.set('strength2', app.lutStrength2)
     }
   }
@@ -628,7 +633,13 @@ app.thumbUrl = (opts) => {
   return '/api/thumb?' + q.toString()
 }
 
-app.activeLutPath = () => app.customLut || app.lutPath
+app.primaryLutPath = () => app.customLut || app.lutPath
+// 没有一级 LUT 时，个性化 LUT 直接作为唯一 LUT 使用（Rec.709 素材无需先还原）
+app.activeLutPath = () => app.primaryLutPath() ||
+  (app.useSecondLut && app.lut2Path ? app.lut2Path : '')
+app.activeLutStrength = () => (app.primaryLutPath() ? app.lutStrength : app.lutStrength2)
+// 只有存在一级 LUT 时，个性化 LUT 才作为二级叠加
+app.secondLutPath = () => (app.primaryLutPath() && app.useSecondLut ? app.lut2Path : '')
 
 // 基底帧：不含 LUT / 调色的原画面，LUT 由浏览器 WebGL 实时叠加
 app.baseFrameUrl = () => {
@@ -644,7 +655,7 @@ app.calibrationUrl = () => {
   if (!app.currentPath) return ''
   return app.thumbUrl({
     lut: app.activeLutPath() || undefined,
-    strength: app.lutStrength,
+    strength: app.activeLutStrength(),
     w: 1280, png: true, full: true,
   })
 }
@@ -716,7 +727,7 @@ app.setCurrentThumb = () => {
   app.previewingLut = !!lut
   // 拖动中与松手都渲染同一尺寸，避免过程中清晰度跳变
   app.preloadThumb(lut
-    ? app.thumbUrl({ lut, strength: app.lutStrength, w: 560, full: true })
+    ? app.thumbUrl({ lut, strength: app.activeLutStrength(), w: 560, full: true })
     : app.thumbUrl({ w: 560, full: true }))
 }
 
@@ -765,8 +776,8 @@ app.refreshPreview = (immediate) => {
 app.previewParams = () => ({
   path: app.currentPath,
   lut_path: app.activeLutPath(),
-  lut_strength: app.lutStrength,
-  lut_path2: app.useSecondLut ? app.lut2Path : '',
+  lut_strength: app.activeLutStrength(),
+  lut_path2: app.secondLutPath(),
   lut_strength2: app.lutStrength2,
   grading: app.grading,
   masks: app.allMasks(),
@@ -1220,8 +1231,8 @@ app.start = async () => {
     body: JSON.stringify({
       files: app.sel,
       lut_path: app.activeLutPath(),
-      lut_path2: app.useSecondLut ? app.lut2Path : '',
-      lut_strength: app.lutStrength,
+      lut_path2: app.secondLutPath(),
+      lut_strength: app.activeLutStrength(),
       lut_strength2: app.lutStrength2,
       output_mode: app.outputMode,
       custom_dir: app.customDir,

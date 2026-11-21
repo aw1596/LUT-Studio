@@ -53,8 +53,8 @@ function measure() {
 
 function syncLuts() {
   const want = [
-    [app.activeLutPath(), app.lutStrength],
-    [app.useSecondLut ? app.lut2Path : '', app.lutStrength2],
+    [app.activeLutPath(), app.activeLutStrength()],
+    [app.secondLutPath(), app.lutStrength2],
   ]
   renderer.setStrengths(want[0][1], want[1][1])
   let pending = false
